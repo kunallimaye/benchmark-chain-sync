@@ -1,0 +1,81 @@
+#!/bin/bash
+# =============================================================================
+# Configure Finish Script
+# =============================================================================
+# Runs after snapshot download completes.
+# Starts op-reth and op-node services.
+# =============================================================================
+
+set -euo pipefail
+
+STATUS_FILE="{{ snapshot_status_file }}"
+
+# Write status to JSON file
+write_status() {
+    local stage="$1"
+    local progress="$2"
+    local error="${3:-}"
+    
+    if [ -n "$error" ]; then
+        echo "{\"stage\": \"$stage\", \"progress\": \"$progress\", \"error\": \"$error\", \"timestamp\": \"$(date -Iseconds)\"}" > "$STATUS_FILE"
+    else
+        echo "{\"stage\": \"$stage\", \"progress\": \"$progress\", \"timestamp\": \"$(date -Iseconds)\"}" > "$STATUS_FILE"
+    fi
+}
+
+# Error handler
+on_error() {
+    local exit_code=$?
+    write_status "failed" "configuring" "configure-finish.sh exited with code $exit_code"
+    exit $exit_code
+}
+trap on_error ERR
+
+echo "=== Configure Finish Started ==="
+
+# Check if snapshot download is complete
+if ! grep -q '"stage": "complete"' "$STATUS_FILE" 2>/dev/null; then
+    echo "ERROR: Snapshot download not complete"
+    echo "Status file contents:"
+    cat "$STATUS_FILE" 2>/dev/null || echo "(no status file)"
+    exit 1
+fi
+
+write_status "configuring" "starting services"
+
+# Reload systemd to pick up any unit file changes
+echo "=== Reloading systemd ==="
+systemctl daemon-reload
+
+# Enable and start op-reth
+echo "=== Starting op-reth ==="
+systemctl enable op-reth.service
+systemctl start op-reth.service
+
+# Wait a moment for op-reth to initialize
+sleep 5
+
+# Enable and start op-node
+echo "=== Starting op-node ==="
+systemctl enable op-node.service
+systemctl start op-node.service
+
+# Verify services are running
+echo "=== Verifying services ==="
+sleep 5
+
+OP_RETH_STATUS=$(systemctl is-active op-reth.service || true)
+OP_NODE_STATUS=$(systemctl is-active op-node.service || true)
+
+echo "op-reth: $OP_RETH_STATUS"
+echo "op-node: $OP_NODE_STATUS"
+
+if [ "$OP_RETH_STATUS" = "active" ] && [ "$OP_NODE_STATUS" = "active" ]; then
+    write_status "ready" "100%"
+    echo "=== Configuration Complete - All services running ==="
+else
+    write_status "failed" "services" "op-reth=$OP_RETH_STATUS, op-node=$OP_NODE_STATUS"
+    echo "=== WARNING: Some services are not running ==="
+    echo "Check logs with: journalctl -u op-reth -u op-node"
+    exit 1
+fi

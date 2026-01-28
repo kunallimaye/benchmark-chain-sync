@@ -1,0 +1,73 @@
+# =============================================================================
+# Build op-node Binary
+# =============================================================================
+# Extracts pre-built op-node binary from official Docker image and uploads
+# to GCS for use by Ansible during VM configuration.
+#
+# Usage:
+#   make build-op-node
+#   make build-op-node OP_NODE_VERSION=v1.12.0
+#
+# =============================================================================
+
+steps:
+  # ---------------------------------------------------------------------------
+  # Extract op-node binary from Docker image
+  # ---------------------------------------------------------------------------
+  - id: 'extract-op-node'
+    name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+        IMAGE="us-docker.pkg.dev/oplabs-tools-artifacts/images/op-node:${_OP_NODE_VERSION}"
+        
+        echo "=== Pulling op-node Docker image ==="
+        echo "Image: $$IMAGE"
+        docker pull "$$IMAGE"
+        
+        echo "=== Extracting binary ==="
+        CONTAINER_ID=$$(docker create "$$IMAGE")
+        docker cp "$$CONTAINER_ID:/usr/local/bin/op-node" /workspace/op-node-${_OP_NODE_VERSION}
+        docker rm "$$CONTAINER_ID"
+        
+        echo "=== Verifying binary ==="
+        chmod +x /workspace/op-node-${_OP_NODE_VERSION}
+        /workspace/op-node-${_OP_NODE_VERSION} --version
+        
+        echo "=== Binary extracted successfully ==="
+        ls -la /workspace/op-node-${_OP_NODE_VERSION}
+
+  # ---------------------------------------------------------------------------
+  # Upload to GCS
+  # ---------------------------------------------------------------------------
+  - id: 'upload-to-gcs'
+    name: 'gcr.io/cloud-builders/gsutil'
+    args:
+      - 'cp'
+      - '/workspace/op-node-${_OP_NODE_VERSION}'
+      - 'gs://${_GCS_BUCKET}/builds/op-node-${_OP_NODE_VERSION}'
+
+  # ---------------------------------------------------------------------------
+  # Verify upload
+  # ---------------------------------------------------------------------------
+  - id: 'verify-upload'
+    name: 'gcr.io/cloud-builders/gsutil'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "=== Uploaded artifact ==="
+        gsutil ls -l "gs://${_GCS_BUCKET}/builds/op-node-${_OP_NODE_VERSION}"
+        echo ""
+        echo "Download with:"
+        echo "  gsutil cp gs://${_GCS_BUCKET}/builds/op-node-${_OP_NODE_VERSION} ./op-node"
+
+substitutions:
+  _OP_NODE_VERSION: 'v1.10.0'
+  _GCS_BUCKET: 'base-mainnet-snapshot'
+
+tags: ['build-op-node']
+
+timeout: '600s'  # 10 minutes

@@ -1,0 +1,152 @@
+# =============================================================================
+# Create Download Disk
+# =============================================================================
+# Creates the shared download disk for snapshot storage.
+# This disk is created once and shared read-only across all benchmark VMs.
+#
+# Usage:
+#   gcloud builds submit . \
+#     --config=cloudbuild/create-download-disk.yaml \
+#     --substitutions=_GCS_BUCKET=...
+#
+# =============================================================================
+
+steps:
+  # ---------------------------------------------------------------------------
+  # Parse config.toml for download disk settings
+  # ---------------------------------------------------------------------------
+  - id: 'parse-config'
+    name: 'python:3.12-slim'
+    entrypoint: 'python3'
+    args:
+      - '-c'
+      - |
+        import tomllib
+        import json
+
+        with open('config.toml', 'rb') as f:
+            config = tomllib.load(f)
+
+        project = config.get('project', {})
+        download = config.get('download', {})
+
+        print("=== Download Disk Configuration ===")
+        print(f"Disk name: {download.get('disk_name')}")
+        print(f"Disk size: {download.get('disk_size_gb')} GB")
+        print(f"Disk type: {download.get('disk_type')}")
+
+        # Write config for next step
+        with open('/workspace/config.json', 'w') as f:
+            json.dump(config, f, indent=2)
+
+  # ---------------------------------------------------------------------------
+  # Generate Terraform variables
+  # ---------------------------------------------------------------------------
+  - id: 'generate-tfvars'
+    name: 'python:3.12-slim'
+    entrypoint: 'python3'
+    args:
+      - '-c'
+      - |
+        import json
+
+        with open('/workspace/config.json', 'r') as f:
+            config = json.load(f)
+
+        project = config.get('project', {})
+        download = config.get('download', {})
+
+        tfvars = {
+            'project_id': project.get('project_id'),
+            'region': project.get('region'),
+            'zone': project.get('zone'),
+            'create_download_disk': True,
+            'download_disk_name': download.get('disk_name', 'op-reth-snapshot-download'),
+            'download_disk_size_gb': download.get('disk_size_gb', 8000),
+            'download_disk_type': download.get('disk_type', 'pd-balanced'),
+            # Don't create L1 or instances
+            'create_l1': False,
+            'instances': {},
+        }
+
+        with open('/workspace/terraform.tfvars.json', 'w') as f:
+            json.dump(tfvars, f, indent=2)
+
+        print("=== Generated terraform.tfvars.json ===")
+        print(json.dumps(tfvars, indent=2))
+
+  # ---------------------------------------------------------------------------
+  # Terraform Init
+  # ---------------------------------------------------------------------------
+  - id: 'terraform-init'
+    name: 'hashicorp/terraform:1.9'
+    dir: 'terraform'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        terraform init \
+          -backend-config="bucket=${_GCS_BUCKET}" \
+          -backend-config="prefix=terraform/state/download-disk"
+
+  # ---------------------------------------------------------------------------
+  # Terraform Apply
+  # ---------------------------------------------------------------------------
+  - id: 'terraform-apply'
+    name: 'hashicorp/terraform:1.9'
+    dir: 'terraform'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        set -e
+        
+        echo "=== Creating Download Disk ==="
+        terraform apply -auto-approve \
+          -var-file=/workspace/terraform.tfvars.json \
+          -target=module.download_disk
+        
+        echo ""
+        echo "=== Download Disk Created ==="
+        
+        # Get disk self_link and write to file for next step (avoids jq dependency)
+        DISK_SELF_LINK=$$(terraform output -raw download_disk_self_link 2>/dev/null || echo "")
+        echo "$$DISK_SELF_LINK"
+        echo "$$DISK_SELF_LINK" > /workspace/download_disk_self_link.txt
+
+  # ---------------------------------------------------------------------------
+  # Save disk info to GCS
+  # ---------------------------------------------------------------------------
+  - id: 'save-disk-info'
+    name: 'gcr.io/cloud-builders/gsutil'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+        
+        # Read disk self_link from previous step (avoids terraform/jq dependency)
+        DISK_SELF_LINK=$$(cat /workspace/download_disk_self_link.txt)
+        
+        if [ -n "$$DISK_SELF_LINK" ]; then
+          echo "{\"self_link\": \"$$DISK_SELF_LINK\"}" > /workspace/download-disk.json
+          gsutil cp /workspace/download-disk.json "gs://${_GCS_BUCKET}/terraform/download-disk.json"
+          echo "Download disk info saved to gs://${_GCS_BUCKET}/terraform/download-disk.json"
+        else
+          echo "WARNING: Could not get download disk self_link"
+        fi
+        
+        echo ""
+        echo "=== Next Steps ==="
+        echo "1. Run 'make download' to download the snapshot"
+        echo "2. Run 'make provision' to create VMs"
+
+substitutions:
+  _GCS_BUCKET: 'base-mainnet-snapshot'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+tags: ['create-download-disk']
+
+timeout: '600s'  # 10 minutes

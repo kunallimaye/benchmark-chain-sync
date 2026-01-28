@@ -1,0 +1,52 @@
+[Unit]
+Description=op-node Rollup Node ({{ network }})
+After=network.target op-reth.service
+Wants=network-online.target
+Requires=op-reth.service
+
+[Service]
+Type=simple
+User={{ service_user }}
+Group={{ service_group }}
+
+ExecStart={{ op_node_bin_path }} \
+    --network={{ op_node_network }} \
+    --l1={{ l1_rpc_endpoint }}{% if l1_api_key | default('') %}?key={{ l1_api_key }}{% endif %} \
+    --l1.beacon={{ l1_beacon_endpoint }} \
+{% if l1_api_key | default('') %}
+    --l1.beacon-header='X-Goog-Api-Key: {{ l1_api_key }}' \
+{% endif %}
+    --l2=http://localhost:{{ op_reth_authrpc_port }} \
+    --l2.jwt-secret={{ jwt_secret_path }} \
+    --rpc.addr=0.0.0.0 \
+    --rpc.port={{ op_node_rpc_port }} \
+    --metrics.enabled \
+    --metrics.addr=0.0.0.0 \
+    --metrics.port={{ op_node_metrics_port }} \
+    --syncmode={{ op_node_syncmode }} \
+    --l2.enginekind={{ op_node_l2_engine_kind }} \
+    --l1.trustrpc \
+    --p2p.priv.path={{ op_node_data_dir }}/opnode_p2p_priv.txt \
+    --p2p.discovery.path={{ op_node_data_dir }}/opnode_discovery_db \
+    --p2p.peerstore.path={{ op_node_data_dir }}/opnode_peerstore_db
+
+Restart=always
+RestartSec=5
+TimeoutStopSec=300
+
+# Log to file for Ops Agent collection
+StandardOutput=append:{{ op_node_log_dir }}/op-node.log
+StandardError=append:{{ op_node_log_dir }}/op-node.log
+
+# Resource limits
+LimitNOFILE=65535
+LimitNPROC=65535
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths={{ op_node_data_dir }} {{ op_node_log_dir }} {{ mount_point }}
+
+[Install]
+WantedBy=multi-user.target

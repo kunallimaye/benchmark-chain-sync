@@ -1,0 +1,135 @@
+# =============================================================================
+# Configure Instances (Ansible Only)
+# =============================================================================
+# Downloads inventory from GCS and runs Ansible playbook to configure VMs.
+# Supports configuring single instance, multiple instances, or all.
+#
+# Prerequisites: VMs must be provisioned (run: make provision)
+#
+# Usage:
+#   # Configure single VM
+#   gcloud builds submit . \
+#     --config=cloudbuild/configure.yaml \
+#     --substitutions=_VM=op-reth-baseline
+#
+#   # Configure all VMs
+#   gcloud builds submit . \
+#     --config=cloudbuild/configure.yaml
+#
+# =============================================================================
+
+steps:
+  # ---------------------------------------------------------------------------
+  # Download inventory from GCS
+  # ---------------------------------------------------------------------------
+  - id: 'download-inventory'
+    name: 'gcr.io/cloud-builders/gsutil'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+        echo "=== Downloading inventory from GCS ==="
+        mkdir -p ansible/inventory
+        gsutil cp "gs://${_GCS_BUCKET}/ansible/inventory.yml" ansible/inventory/hosts.yml
+        
+        echo "Inventory contents:"
+        cat ansible/inventory/hosts.yml
+
+  # ---------------------------------------------------------------------------
+  # Setup SSH keys via gcloud for OS Login
+  # ---------------------------------------------------------------------------
+  - id: 'setup-ssh'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+        
+        echo "=== Setting up SSH keys for OS Login ==="
+        
+        # Generate SSH key pair if not exists
+        mkdir -p /root/.ssh
+        if [ ! -f /root/.ssh/google_compute_engine ]; then
+          ssh-keygen -t rsa -b 4096 -f /root/.ssh/google_compute_engine -N "" -q
+        fi
+        
+        # Add SSH key to OS Login
+        gcloud compute os-login ssh-keys add --key-file=/root/.ssh/google_compute_engine.pub --project=${_PROJECT_ID}
+        
+        # Get the OS Login username
+        OSLOGIN_USER=$$(gcloud compute os-login describe-profile --format='value(posixAccounts[0].username)')
+        echo "OS Login user: $$OSLOGIN_USER"
+        echo "$$OSLOGIN_USER" > /workspace/oslogin_user.txt
+        
+        # Copy keys to workspace for next step
+        cp /root/.ssh/google_compute_engine /workspace/
+        cp /root/.ssh/google_compute_engine.pub /workspace/
+        chmod 600 /workspace/google_compute_engine
+        
+        echo "SSH keys configured"
+
+  # ---------------------------------------------------------------------------
+  # Run Ansible Playbook
+  # ---------------------------------------------------------------------------
+  - id: 'ansible-configure'
+    name: 'cytopia/ansible:latest-tools'
+    dir: 'ansible'
+    entrypoint: '/bin/sh'
+    env:
+      - 'ANSIBLE_HOST_KEY_CHECKING=False'
+      - 'ANSIBLE_STRATEGY=free'
+    args:
+      - '-c'
+      - |
+        set -e
+        
+        echo "=== Running Ansible Playbook ==="
+        
+        # Get OS Login username from previous step
+        OSLOGIN_USER=$$(cat /workspace/oslogin_user.txt)
+        echo "Using OS Login user: $$OSLOGIN_USER"
+        
+        # Setup SSH key
+        mkdir -p /root/.ssh
+        cp /workspace/google_compute_engine /root/.ssh/
+        cp /workspace/google_compute_engine.pub /root/.ssh/
+        chmod 600 /root/.ssh/google_compute_engine
+        
+        # Determine limit based on parameters
+        if [ -n "${_VM}" ]; then
+          echo "Configuring VM: ${_VM}"
+          LIMIT="--limit=${_VM}"
+        else
+          echo "Configuring ALL VMs"
+          LIMIT=""
+        fi
+        
+        ansible-playbook \
+          -i inventory/hosts.yml \
+          playbooks/site.yml \
+          --forks=${_FORKS} \
+          --user=$$OSLOGIN_USER \
+          --private-key=/root/.ssh/google_compute_engine \
+          --become \
+          $$LIMIT \
+          -v
+        
+        echo ""
+        echo "=== Configuration Complete ==="
+
+substitutions:
+  _VM: ''
+  _FORKS: '10'
+  _GCS_BUCKET: 'base-mainnet-snapshot'
+  _PROJECT_ID: 'bct-prod-c3-tdx-3'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  pool:
+    name: 'projects/bct-prod-c3-tdx-3/locations/us-central1/workerPools/benchmark-build-pool'
+
+tags: ['configure']
+
+timeout: '1800s'  # 30 minutes (snapshot downloads in background on VM)

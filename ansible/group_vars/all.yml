@@ -1,0 +1,51 @@
+# =============================================================================
+# Global Variables
+# =============================================================================
+
+# Mount points
+mount_point: "/mnt/data"
+download_mount_point: "/mnt/download"
+
+# Data directories (all under mount_point)
+op_reth_data_dir: "{{ mount_point }}/op-reth"
+op_node_data_dir: "{{ mount_point }}/op-node"
+jwt_secret_path: "{{ mount_point }}/jwt.hex"
+
+# Log directories
+op_reth_log_dir: "/var/log/op-reth"
+op_node_log_dir: "/var/log/op-node"
+
+# Binary paths
+op_reth_bin_path: "/usr/local/bin/op-reth"
+op_node_bin_path: "/usr/local/bin/op-node"
+
+# User/Group
+service_user: "reth"
+service_group: "reth"
+
+# Ports
+op_reth_http_port: 8545
+op_reth_ws_port: 8546
+op_reth_authrpc_port: 9551
+op_reth_metrics_port: 9001
+
+op_node_rpc_port: 7545
+op_node_metrics_port: 7300
+
+# Base network sequencer URLs
+base_sequencer_urls:
+  base-mainnet: "https://mainnet-sequencer.base.org"
+  base-sepolia: "https://sepolia-sequencer.base.org"
+
+# Run ID - generated at benchmark start
+run_id: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+
+# -----------------------------------------------------------------------------
+# Chain Name Mappings
+# -----------------------------------------------------------------------------
+# Map network names (from config.toml) to chain names expected by binaries.
+# reth uses different chain names than config.toml network names.
+# -----------------------------------------------------------------------------
+reth_chain_map:
+  base-mainnet: "base"
+  base-sepolia: "base-sepolia"

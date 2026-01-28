@@ -1,0 +1,22 @@
+---
+# =============================================================================
+# op-node Role Defaults
+# =============================================================================
+
+# op-node version - passed from inventory (global from [build] section)
+# op_node_version: defined in group_vars or inventory
+
+# Binary artifact name (downloaded from GCS)
+op_node_artifact_name: "op-node-{{ op_node_version }}"
+
+# Network configuration
+op_node_network: "{{ network }}"
+
+# Sync mode
+op_node_syncmode: "execution-layer"
+
+# L2 engine kind
+op_node_l2_engine_kind: "reth"
+
+# Whether to start services (set to false for background snapshot download)
+start_services: true

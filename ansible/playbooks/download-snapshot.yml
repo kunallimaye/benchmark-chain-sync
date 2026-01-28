@@ -1,0 +1,23 @@
+---
+# =============================================================================
+# Download Base Snapshot Only
+# =============================================================================
+
+- name: Download Base snapshot
+  hosts: all
+  become: yes
+  vars_files:
+    - ../group_vars/all.yml
+
+  roles:
+    - snapshot
+
+  post_tasks:
+    - name: Show snapshot directory size
+      command: du -sh {{ op_reth_data_dir }}
+      register: snapshot_size
+      changed_when: false
+
+    - name: Display size
+      debug:
+        msg: "Snapshot data size: {{ snapshot_size.stdout }}"

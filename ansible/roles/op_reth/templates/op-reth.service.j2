@@ -1,0 +1,58 @@
+[Unit]
+Description=op-reth Base Execution Client ({{ reth_version }})
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ service_user }}
+Group={{ service_group }}
+
+ExecStart={{ op_reth_bin_path }} node \
+    --chain {{ op_reth_chain }} \
+    --datadir {{ op_reth_data_dir }} \
+    --http \
+    --http.addr 0.0.0.0 \
+    --http.port {{ op_reth_http_port }} \
+    --http.api eth,net,web3,debug,txpool \
+    --ws \
+    --ws.addr 0.0.0.0 \
+    --ws.port {{ op_reth_ws_port }} \
+    --authrpc.addr 0.0.0.0 \
+    --authrpc.port {{ op_reth_authrpc_port }} \
+    --authrpc.jwtsecret {{ jwt_secret_path }} \
+    --metrics 0.0.0.0:{{ op_reth_metrics_port }} \
+    --rollup.sequencer-http {{ op_reth_sequencer_url }} \
+{% if engine_cache_mb | default(0) | int > 0 %}
+    --engine.cross-block-cache-size {{ engine_cache_mb }} \
+{% endif %}
+{% if engine_workers | default(0) | int > 0 %}
+    --engine.storage-worker-count {{ engine_workers }} \
+    --engine.account-worker-count {{ engine_workers }} \
+{% endif %}
+    --engine.reserved-cpu-cores {{ engine_reserved_cores | default(0) }} \
+    --log.file.directory {{ op_reth_log_dir }} \
+{% if tracing_enabled | default(false) %}
+    --tracing-otlp=http://localhost:4317 \
+    --tracing-otlp-protocol=grpc \
+    --tracing-otlp.service-name=op-reth-{{ vm_name | default('unknown') }} \
+    --tracing-otlp.sample-ratio={{ tracing_sample_ratio | default(0.01) }} \
+    --tracing-otlp.filter={{ tracing_filter | default('info') }}
+{% endif %}
+
+Restart=always
+RestartSec=5
+TimeoutStopSec=300
+
+# Resource limits
+LimitNOFILE=65535
+LimitNPROC=65535
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths={{ op_reth_data_dir }} {{ op_reth_log_dir }} {{ mount_point }}
+
+[Install]
+WantedBy=multi-user.target

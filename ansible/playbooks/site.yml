@@ -1,0 +1,64 @@
+---
+# =============================================================================
+# Full VM Setup Playbook
+# =============================================================================
+# Configures the benchmark VM with all required components:
+# - Common packages and user setup
+# - GCP Ops Agent for metrics
+# - Install op-reth and op-node (binaries + systemd units, NOT started)
+# - Extract snapshot from shared download disk
+# - On extraction completion, start op-reth and op-node services
+# =============================================================================
+
+- name: Setup benchmark VM
+  hosts: all
+  become: yes
+  vars_files:
+    - ../group_vars/all.yml
+
+  pre_tasks:
+    - name: Wait for cloud-init to complete
+      command: cloud-init status --wait
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Wait for apt lock to be released
+      shell: while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 5; done
+      changed_when: false
+
+  roles:
+    - common
+    - ops_agent
+    - role: op_reth
+      vars:
+        start_services: false
+    - role: op_node
+      vars:
+        start_services: false
+    - snapshot_extract
+
+  post_tasks:
+    - name: Display configuration summary
+      debug:
+        msg: |
+          ============================================================
+          CONFIGURATION COMPLETE
+          ============================================================
+          
+          VM: {{ vm_name }}
+          Machine type: {{ machine_type }}
+          Storage type: {{ storage_type }}
+          Confidential compute (TDX): {{ confidential_compute | default(true) }}
+          
+          {% if reth_db_exists.stat.exists | default(false) %}
+          Status: Data exists, services started
+          {% else %}
+          Status: Extraction started in background
+          
+          Monitor progress:
+            make extract-status VM={{ vm_name }}
+          
+          When the extraction completes, op-reth and op-node will start
+          automatically.
+          {% endif %}
+          ============================================================

@@ -1,0 +1,19 @@
+[Unit]
+Description=Snapshot Extraction Service
+Documentation=https://github.com/paradigmxyz/reth
+After=network-online.target local-fs.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/scripts/snapshot-extract.sh
+RemainAfterExit=yes
+TimeoutStartSec=infinity
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=snapshot-extract
+
+[Install]
+WantedBy=multi-user.target

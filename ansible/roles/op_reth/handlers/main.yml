@@ -1,0 +1,18 @@
+---
+# =============================================================================
+# op-reth Handlers
+# =============================================================================
+# Note: These handlers are no longer notified directly.
+# Systemd reload is done inline in tasks when needed.
+# Restart is only done when start_services is true.
+# =============================================================================
+
+- name: Reload systemd
+  systemd:
+    daemon_reload: yes
+
+- name: Restart op-reth
+  systemd:
+    name: op-reth
+    state: restarted
+  when: start_services | default(true)

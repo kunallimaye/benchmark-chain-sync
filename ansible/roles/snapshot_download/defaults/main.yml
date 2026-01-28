@@ -1,0 +1,20 @@
+# =============================================================================
+# Snapshot Download Role - Default Variables
+# =============================================================================
+
+# Status file location
+snapshot_status_file: "{{ mount_point }}/.snapshot-status"
+
+# Temp directory for download
+snapshot_temp_dir: "{{ mount_point }}/tmp"
+
+# aria2c settings (used when streaming_extraction is false)
+aria2_connections: 16
+aria2_split: 16
+aria2_min_split_size: "100M"
+
+# Streaming extraction mode
+# When true: Uses curl | pv | zstd | tar (single connection, no temp file)
+# When false: Uses aria2c download + separate extraction (faster, but needs 2x disk space)
+# Auto-enabled for LSSD machines where disk space is limited
+streaming_extraction: "{{ storage_type | default('') == 'lssd' }}"

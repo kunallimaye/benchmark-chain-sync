@@ -1,0 +1,308 @@
+# =============================================================================
+# Provision Infrastructure (Terraform Only)
+# =============================================================================
+# Creates/updates benchmark VM(s) from config.toml and generates Ansible inventory.
+# Does NOT run Ansible - use configure.yaml for that.
+#
+# Prerequisites:
+#   - L1 infrastructure must exist (run: make create-l1)
+#   - Download disk should exist (run: make create-download-disk)
+#
+# Usage:
+#   gcloud builds submit . \
+#     --config=cloudbuild/provision.yaml \
+#     --substitutions=_L1_API_KEY=...,_VM=op-reth-baseline
+#
+# =============================================================================
+
+steps:
+  # ---------------------------------------------------------------------------
+  # Convert config.toml to JSON and merge defaults
+  # ---------------------------------------------------------------------------
+  - id: 'parse-config'
+    name: 'python:3.12-slim'
+    entrypoint: 'python3'
+    args:
+      - '-c'
+      - |
+        import tomllib
+        import json
+        import sys
+
+        # Load config.toml
+        with open('config.toml', 'rb') as f:
+            config = tomllib.load(f)
+
+        # Get defaults for VM and tracing config
+        defaults = config.get('defaults', {}).get('vm', {})
+        tracing = config.get('tracing', {})
+        download = config.get('download', {})
+
+        # Merge defaults into each VM
+        vms = config.get('vm', [])
+        for vm in vms:
+            # Check if this is an LSSD machine type
+            machine_type = vm.get('machine_type', defaults.get('machine_type', ''))
+            is_lssd = machine_type.endswith('-lssd')
+            
+            for key, value in defaults.items():
+                if key not in vm:
+                    # Don't apply storage_type or disk_size_gb defaults for LSSD machines
+                    if is_lssd and key in ('storage_type', 'disk_size_gb'):
+                        continue
+                    vm[key] = value
+
+        # Filter to specific VM if _VM is set
+        vm_filter = '${_VM}'
+        if vm_filter:
+            vms = [vm for vm in vms if vm.get('name') == vm_filter]
+            if not vms:
+                print(f"ERROR: VM '{vm_filter}' not found in config.toml", file=sys.stderr)
+                sys.exit(1)
+
+        # Update config with merged VMs and ensure tracing config exists
+        config['vm'] = vms
+        config['tracing'] = tracing
+        config['download'] = download
+
+        # Write merged config
+        with open('/workspace/config.json', 'w') as f:
+            json.dump(config, f, indent=2)
+
+        print("=== Parsed config.toml ===")
+        print(f"Project: {config.get('project', {}).get('project_id')}")
+        print(f"Download disk: {download.get('disk_name', 'not configured')}")
+        print(f"VMs to provision: {[vm.get('name') for vm in vms]}")
+        print("")
+        for vm in vms:
+            machine_type = vm.get('machine_type')
+            storage_type = vm.get('storage_type')
+            is_lssd = machine_type and machine_type.endswith('-lssd')
+            confidential = vm.get('confidential_compute', True)
+            print(f"  {vm.get('name')}:")
+            print(f"    machine_type: {machine_type}")
+            print(f"    storage_type: {storage_type or 'lssd (built-in)'}")
+            print(f"    confidential_compute: {confidential}")
+            if storage_type and storage_type.startswith('hyperdisk'):
+                print(f"    provisioned_iops: {vm.get('provisioned_iops')}")
+                print(f"    provisioned_throughput: {vm.get('provisioned_throughput')}")
+            if not is_lssd and storage_type:
+                print(f"    disk_size_gb: {vm.get('disk_size_gb')}")
+            print(f"    reth_version: {vm.get('reth_version')}")
+
+        # Write individual values for subsequent steps (avoids jq dependency)
+        with open('/workspace/project_id.txt', 'w') as f:
+            f.write(config.get('project', {}).get('project_id', ''))
+        with open('/workspace/zone.txt', 'w') as f:
+            f.write(config.get('project', {}).get('zone', ''))
+        with open('/workspace/disk_name.txt', 'w') as f:
+            f.write(download.get('disk_name', 'op-reth-snapshot-download'))
+
+  # ---------------------------------------------------------------------------
+  # Get download disk self_link
+  # ---------------------------------------------------------------------------
+  - id: 'get-download-disk'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+        
+        PROJECT_ID=$$(cat /workspace/project_id.txt)
+        ZONE=$$(cat /workspace/zone.txt)
+        DISK_NAME=$$(cat /workspace/disk_name.txt)
+        
+        echo "Looking for download disk: $$DISK_NAME"
+        
+        if gcloud compute disks describe "$$DISK_NAME" --zone="$$ZONE" --project="$$PROJECT_ID" &>/dev/null; then
+          SELF_LINK=$$(gcloud compute disks describe "$$DISK_NAME" --zone="$$ZONE" --project="$$PROJECT_ID" --format="value(selfLink)")
+          echo "Found download disk: $$SELF_LINK"
+          echo "$$SELF_LINK" > /workspace/download_disk_self_link.txt
+        else
+          echo "WARNING: Download disk not found. VMs will be created without download disk attached."
+          echo "Run 'make create-download-disk' to create it."
+          echo "" > /workspace/download_disk_self_link.txt
+        fi
+
+  # ---------------------------------------------------------------------------
+  # Generate Terraform variables from config.json
+  # ---------------------------------------------------------------------------
+  - id: 'generate-tfvars'
+    name: 'python:3.12-slim'
+    entrypoint: 'python3'
+    args:
+      - '-c'
+      - |
+        import json
+
+        with open('/workspace/config.json', 'r') as f:
+            config = json.load(f)
+
+        # Read download disk self_link
+        download_disk_self_link = None
+        try:
+            with open('/workspace/download_disk_self_link.txt', 'r') as f:
+                download_disk_self_link = f.read().strip() or None
+        except:
+            pass
+
+        project = config.get('project', {})
+        l1 = config.get('l1', {})
+        vms = config.get('vm', [])
+        tracing = config.get('tracing', {})
+        download = config.get('download', {})
+
+        # Convert VMs list to map keyed by name
+        instances = {}
+        for vm in vms:
+            name = vm.get('name')
+            # storage_type can be None for LSSD machine types
+            storage_type = vm.get('storage_type')
+            is_hyperdisk = storage_type and storage_type.startswith('hyperdisk')
+            
+            instances[name] = {
+                'machine_type': vm.get('machine_type'),
+                'storage_type': storage_type,  # Can be None for LSSD machine types
+                'disk_size_gb': vm.get('disk_size_gb', 15000) if storage_type else 0,
+                'reth_version': vm.get('reth_version'),
+                'op_node_version': vm.get('op_node_version', 'v1.16.5'),
+                'confidential_compute': vm.get('confidential_compute', True),
+                # Performance tuning
+                'engine_cache_mb': vm.get('engine_cache_mb', 4096),
+                'engine_workers': vm.get('engine_workers', 0),
+                # Hyperdisk settings
+                'provisioned_iops': vm.get('provisioned_iops') if is_hyperdisk else None,
+                'provisioned_throughput': vm.get('provisioned_throughput') if is_hyperdisk else None,
+            }
+
+        # Write terraform.tfvars.json
+        tfvars = {
+            'project_id': project.get('project_id'),
+            'region': project.get('region'),
+            'zone': project.get('zone'),
+            'network': project.get('network'),
+            'gcs_bucket': project.get('gcs_bucket'),
+            'l1_rpc_endpoint': l1.get('rpc_endpoint'),
+            'l1_beacon_endpoint': l1.get('beacon_endpoint'),
+            'l1_api_key': '${_L1_API_KEY}',
+            'create_l1': False,
+            'create_download_disk': False,  # Don't create, just reference
+            'download_disk_self_link': download_disk_self_link,
+            'instances': instances,
+            'tracing_enabled': tracing.get('enabled', True),
+            'tracing_sample_ratio': tracing.get('sample_ratio', 0.01),
+            'tracing_filter': tracing.get('filter', 'info'),
+        }
+
+        with open('/workspace/terraform.tfvars.json', 'w') as f:
+            json.dump(tfvars, f, indent=2)
+
+        print("=== Generated terraform.tfvars.json ===")
+        # Don't print API key
+        tfvars_safe = tfvars.copy()
+        tfvars_safe['l1_api_key'] = '***'
+        print(json.dumps(tfvars_safe, indent=2))
+
+  # ---------------------------------------------------------------------------
+  # Terraform Init
+  # ---------------------------------------------------------------------------
+  - id: 'terraform-init'
+    name: 'hashicorp/terraform:1.9'
+    dir: 'terraform'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        terraform init \
+          -backend-config="bucket=${_GCS_BUCKET}" \
+          -backend-config="prefix=terraform/state/benchmark"
+
+  # ---------------------------------------------------------------------------
+  # Terraform Plan/Apply
+  # ---------------------------------------------------------------------------
+  - id: 'terraform-apply'
+    name: 'hashicorp/terraform:1.9'
+    dir: 'terraform'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        set -e
+        
+        # Build target option if specified
+        TARGET_OPT=""
+        if [ -n "${_TARGET}" ]; then
+          TARGET_OPT="-target=${_TARGET}"
+          echo "=== Targeting: ${_TARGET} ==="
+        fi
+        
+        if [ "${_PLAN_ONLY}" = "true" ]; then
+          echo "=== Terraform Plan (dry-run) ==="
+          terraform plan \
+            -var-file=/workspace/terraform.tfvars.json \
+            $$TARGET_OPT
+          echo ""
+          echo "=== Plan complete (no changes applied) ==="
+        else
+          echo "=== Applying Terraform ==="
+          terraform apply -auto-approve \
+            -var-file=/workspace/terraform.tfvars.json \
+            $$TARGET_OPT
+          
+          echo ""
+          echo "=== Terraform Outputs ==="
+          terraform output -json
+        fi
+
+  # ---------------------------------------------------------------------------
+  # Upload inventory and instances.json to GCS (skip in plan-only mode)
+  # ---------------------------------------------------------------------------
+  - id: 'upload-to-gcs'
+    name: 'gcr.io/cloud-builders/gsutil'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+        
+        if [ "${_PLAN_ONLY}" = "true" ]; then
+          echo "=== Skipping upload (plan-only mode) ==="
+          exit 0
+        fi
+        
+        echo "=== Uploading to GCS ==="
+        
+        # Upload Ansible inventory
+        if [ -f ansible/inventory/hosts.yml ]; then
+          gsutil cp ansible/inventory/hosts.yml "gs://${_GCS_BUCKET}/ansible/inventory.yml"
+          echo "Inventory: gs://${_GCS_BUCKET}/ansible/inventory.yml"
+        fi
+        
+        # Upload config.json for reference
+        gsutil cp /workspace/config.json "gs://${_GCS_BUCKET}/terraform/config.json"
+        echo "Config: gs://${_GCS_BUCKET}/terraform/config.json"
+        
+        # Generate and upload instances.json from terraform output
+        cd terraform
+        terraform output -json instances > /workspace/instances.json 2>/dev/null || echo '{}' > /workspace/instances.json
+        gsutil cp /workspace/instances.json "gs://${_GCS_BUCKET}/terraform/instances.json"
+        echo "Instances: gs://${_GCS_BUCKET}/terraform/instances.json"
+        
+        echo ""
+        echo "=== Provisioning Complete ==="
+        echo "Next step: make configure"
+
+substitutions:
+  _GCS_BUCKET: 'base-mainnet-snapshot'
+  _L1_API_KEY: ''  # Required: API key for BNE access
+  _VM: ''          # Optional: filter to specific VM name
+  _PLAN_ONLY: ''   # Optional: set to 'true' for dry-run (plan only, no apply)
+  _TARGET: ''      # Optional: terraform -target option (e.g., module.monitoring)
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+tags: ['provision']
+
+timeout: '1800s'  # 30 minutes

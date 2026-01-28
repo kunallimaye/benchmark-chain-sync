@@ -1,0 +1,328 @@
+# =============================================================================
+# Download Snapshot
+# =============================================================================
+# Downloads the snapshot to the shared download disk.
+# Creates a temporary downloader VM, attaches the disk read-write,
+# downloads the snapshot, then destroys the VM.
+#
+# Usage:
+#   gcloud builds submit . \
+#     --config=cloudbuild/download.yaml
+#
+# =============================================================================
+
+steps:
+  # ---------------------------------------------------------------------------
+  # Parse config.toml and write values to individual files
+  # ---------------------------------------------------------------------------
+  - id: 'parse-config'
+    name: 'python:3.12-slim'
+    entrypoint: 'python3'
+    args:
+      - '-c'
+      - |
+        import tomllib
+        import json
+
+        with open('config.toml', 'rb') as f:
+            config = tomllib.load(f)
+
+        project = config.get('project', {})
+        download = config.get('download', {})
+
+        print("=== Download Configuration ===")
+        print(f"Project ID: {project.get('project_id')}")
+        print(f"Zone: {project.get('zone')}")
+        print(f"Snapshot URL: {download.get('snapshot_url')}")
+        print(f"Disk name: {download.get('disk_name')}")
+        print(f"Downloader VM: {download.get('downloader_machine_type', 'n2-standard-8')}")
+
+        # Write individual values to files for subsequent steps
+        with open('/workspace/project_id.txt', 'w') as f:
+            f.write(project.get('project_id', ''))
+        
+        with open('/workspace/zone.txt', 'w') as f:
+            f.write(project.get('zone', ''))
+        
+        with open('/workspace/disk_name.txt', 'w') as f:
+            f.write(download.get('disk_name', 'op-reth-snapshot-download'))
+        
+        with open('/workspace/snapshot_url.txt', 'w') as f:
+            f.write(download.get('snapshot_url', ''))
+        
+        with open('/workspace/machine_type.txt', 'w') as f:
+            f.write(download.get('downloader_machine_type', 'n2-standard-8'))
+
+        # Also write full config for reference
+        with open('/workspace/config.json', 'w') as f:
+            json.dump(config, f, indent=2)
+
+  # ---------------------------------------------------------------------------
+  # Check if download disk exists
+  # ---------------------------------------------------------------------------
+  - id: 'check-disk'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+        
+        PROJECT_ID=$$(cat /workspace/project_id.txt)
+        ZONE=$$(cat /workspace/zone.txt)
+        DISK_NAME=$$(cat /workspace/disk_name.txt)
+        
+        echo "Checking for download disk: $$DISK_NAME"
+        
+        if ! gcloud compute disks describe "$$DISK_NAME" --zone="$$ZONE" --project="$$PROJECT_ID" &>/dev/null; then
+          echo "ERROR: Download disk '$$DISK_NAME' not found!"
+          echo "Run 'make create-download-disk' first."
+          exit 1
+        fi
+        
+        echo "Download disk exists"
+
+  # ---------------------------------------------------------------------------
+  # Create downloader VM with disk attached
+  # ---------------------------------------------------------------------------
+  - id: 'create-downloader-vm'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+        
+        PROJECT_ID=$$(cat /workspace/project_id.txt)
+        ZONE=$$(cat /workspace/zone.txt)
+        DISK_NAME=$$(cat /workspace/disk_name.txt)
+        MACHINE_TYPE=$$(cat /workspace/machine_type.txt)
+        
+        VM_NAME="op-reth-downloader"
+        
+        echo "=== Creating Downloader VM ==="
+        echo "VM: $$VM_NAME"
+        echo "Machine type: $$MACHINE_TYPE"
+        echo "Disk: $$DISK_NAME"
+        
+        # Check if VM already exists
+        if gcloud compute instances describe "$$VM_NAME" --zone="$$ZONE" --project="$$PROJECT_ID" &>/dev/null; then
+          echo "Downloader VM already exists, deleting..."
+          gcloud compute instances delete "$$VM_NAME" --zone="$$ZONE" --project="$$PROJECT_ID" --quiet
+        fi
+        
+        # Create VM with download disk attached
+        gcloud compute instances create "$$VM_NAME" \
+          --zone="$$ZONE" \
+          --project="$$PROJECT_ID" \
+          --machine-type="$$MACHINE_TYPE" \
+          --image-family="ubuntu-2404-lts-amd64" \
+          --image-project="ubuntu-os-cloud" \
+          --boot-disk-size="50GB" \
+          --boot-disk-type="pd-balanced" \
+          --disk="name=$$DISK_NAME,device-name=download-disk,mode=rw" \
+          --scopes="cloud-platform" \
+          --metadata="enable-oslogin=TRUE"
+        
+        echo "Downloader VM created"
+        
+        # Wait for VM to be ready
+        echo "Waiting for VM to be ready..."
+        sleep 30
+
+  # ---------------------------------------------------------------------------
+  # Run download on VM
+  # ---------------------------------------------------------------------------
+  - id: 'run-download'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    timeout: '28800s'  # 8 hours for download
+    args:
+      - '-c'
+      - |
+        set -e
+        
+        PROJECT_ID=$$(cat /workspace/project_id.txt)
+        ZONE=$$(cat /workspace/zone.txt)
+        SNAPSHOT_URL=$$(cat /workspace/snapshot_url.txt)
+        
+        VM_NAME="op-reth-downloader"
+        
+        echo "=== Running Download ==="
+        echo "VM: $$VM_NAME"
+        echo "Snapshot URL: $$SNAPSHOT_URL"
+        
+        # Create download script
+        cat > /workspace/download-script.sh << 'SCRIPT_EOF'
+        #!/bin/bash
+        set -euo pipefail
+        
+        SNAPSHOT_URL="__SNAPSHOT_URL__"
+        MOUNT_POINT="/mnt/download"
+        DEVICE="/dev/disk/by-id/google-download-disk"
+        STATUS_FILE="$$MOUNT_POINT/.download-status"
+        SNAPSHOT_FILE="$$MOUNT_POINT/snapshot.tar.zst"
+        
+        write_status() {
+            echo "{\"stage\": \"$$1\", \"progress\": \"$$2\", \"timestamp\": \"$$(date -Iseconds)\"}" | sudo tee "$$STATUS_FILE" > /dev/null
+        }
+        
+        echo "=== Setting up download disk ==="
+        
+        # Wait for device
+        for i in $$(seq 1 30); do
+            if [ -e "$$DEVICE" ]; then
+                echo "Device found!"
+                break
+            fi
+            echo "Waiting for device... ($$i/30)"
+            sleep 2
+        done
+        
+        if [ ! -e "$$DEVICE" ]; then
+            echo "ERROR: Device not found"
+            exit 1
+        fi
+        
+        # Format if needed
+        if ! sudo blkid "$$DEVICE" &>/dev/null; then
+            echo "Formatting disk..."
+            sudo mkfs.xfs -f "$$DEVICE"
+        fi
+        
+        # Mount
+        sudo mkdir -p "$$MOUNT_POINT"
+        if ! mount | grep -q "$$MOUNT_POINT"; then
+            sudo mount "$$DEVICE" "$$MOUNT_POINT"
+        fi
+        
+        echo "Disk mounted at $$MOUNT_POINT"
+        df -h "$$MOUNT_POINT"
+        
+        # Install aria2
+        echo "Installing aria2..."
+        sudo apt-get update -qq && sudo apt-get install -y -qq aria2
+        
+        # Generate signed URL
+        echo "=== Generating Signed URL ==="
+        write_status "signing" "generating signed URL"
+        
+        SA_EMAIL=$$(curl -s -H "Metadata-Flavor: Google" \
+            "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email")
+        
+        echo "Service account: $$SA_EMAIL"
+        
+        SIGNED_URL=$$(gcloud storage sign-url "$$SNAPSHOT_URL" \
+            --impersonate-service-account="$$SA_EMAIL" \
+            --duration=12h \
+            --region=us-central1 \
+            --format="value(signed_url)" 2>&1)
+        
+        if [ -z "$$SIGNED_URL" ] || [[ "$$SIGNED_URL" == *"ERROR"* ]]; then
+            echo "ERROR: Failed to generate signed URL: $$SIGNED_URL"
+            write_status "failed" "sign-url"
+            exit 1
+        fi
+        
+        echo "Signed URL generated"
+        
+        # Download with aria2c
+        echo "=== Downloading Snapshot ==="
+        write_status "downloading" "0%"
+        
+        cd "$$MOUNT_POINT"
+        
+        # Remove existing file if present
+        sudo rm -f "$$SNAPSHOT_FILE"
+        
+        sudo aria2c \
+            --dir="$$MOUNT_POINT" \
+            --out="snapshot.tar.zst" \
+            --max-connection-per-server=16 \
+            --split=16 \
+            --min-split-size=100M \
+            --file-allocation=none \
+            --continue=true \
+            --auto-file-renaming=false \
+            --allow-overwrite=true \
+            --summary-interval=60 \
+            --console-log-level=notice \
+            "$$SIGNED_URL"
+        
+        echo "=== Download Complete ==="
+        write_status "complete" "100%"
+        
+        ls -lh "$$SNAPSHOT_FILE"
+        SCRIPT_EOF
+        
+        # Replace placeholder with actual URL
+        sed -i "s|__SNAPSHOT_URL__|$$SNAPSHOT_URL|g" /workspace/download-script.sh
+        
+        # Copy script to VM and execute
+        gcloud compute scp /workspace/download-script.sh "$$VM_NAME:/tmp/download-script.sh" \
+          --zone="$$ZONE" \
+          --project="$$PROJECT_ID" \
+          --internal-ip
+        
+        gcloud compute ssh "$$VM_NAME" \
+          --zone="$$ZONE" \
+          --project="$$PROJECT_ID" \
+          --internal-ip \
+          --command="chmod +x /tmp/download-script.sh && /tmp/download-script.sh"
+
+  # ---------------------------------------------------------------------------
+  # Verify download and cleanup
+  # ---------------------------------------------------------------------------
+  - id: 'verify-and-cleanup'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+        
+        PROJECT_ID=$$(cat /workspace/project_id.txt)
+        ZONE=$$(cat /workspace/zone.txt)
+        
+        VM_NAME="op-reth-downloader"
+        
+        echo "=== Verifying Download ==="
+        
+        # Check status
+        gcloud compute ssh "$$VM_NAME" \
+          --zone="$$ZONE" \
+          --project="$$PROJECT_ID" \
+          --internal-ip \
+          --command="cat /mnt/download/.download-status && ls -lh /mnt/download/snapshot.tar.zst"
+        
+        echo ""
+        echo "=== Unmounting disk ==="
+        gcloud compute ssh "$$VM_NAME" \
+          --zone="$$ZONE" \
+          --project="$$PROJECT_ID" \
+          --internal-ip \
+          --command="sudo umount /mnt/download || true"
+        
+        echo ""
+        echo "=== Deleting Downloader VM ==="
+        gcloud compute instances delete "$$VM_NAME" \
+          --zone="$$ZONE" \
+          --project="$$PROJECT_ID" \
+          --quiet
+        
+        echo ""
+        echo "=== Download Complete ==="
+        echo "The snapshot is now available on the shared download disk."
+        echo ""
+        echo "Next steps:"
+        echo "  1. make provision    # Create VMs with download disk attached"
+        echo "  2. make configure    # Extract snapshot and start services"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  pool:
+    name: 'projects/bct-prod-c3-tdx-3/locations/us-central1/workerPools/benchmark-build-pool'
+
+tags: ['download']
+
+timeout: '36000s'  # 10 hours total

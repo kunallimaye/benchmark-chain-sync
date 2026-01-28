@@ -1,0 +1,162 @@
+# =============================================================================
+# Build op-reth Binary
+# =============================================================================
+# Builds op-reth from specified repo/branch/commit and uploads to GCS.
+# Artifact naming: op-reth-{commit_short} (e.g., op-reth-6df249c)
+#
+# Usage:
+#   gcloud builds submit . \
+#     --config=cloudbuild/build-op-reth.yaml \
+#     --substitutions=_RETH_BRANCH=main
+#
+# =============================================================================
+
+steps:
+  # ---------------------------------------------------------------------------
+  # Clone Repository
+  # ---------------------------------------------------------------------------
+  - id: 'clone'
+    name: 'gcr.io/cloud-builders/git'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -euo pipefail
+        echo "=== Cloning Repository ==="
+        echo "Repo: ${_RETH_REPO}"
+        echo "Branch: ${_RETH_BRANCH}"
+        
+        git clone --depth=100 --branch=${_RETH_BRANCH} ${_RETH_REPO} reth
+        cd reth
+        
+        if [ -n "${_RETH_COMMIT}" ]; then
+          echo "Checking out specific commit: ${_RETH_COMMIT}"
+          git fetch --depth=1 origin ${_RETH_COMMIT}
+          git checkout ${_RETH_COMMIT}
+        fi
+        
+        echo ""
+        echo "=== Build Info ==="
+        echo "Commit: $(git rev-parse HEAD)"
+        echo "Short:  $(git rev-parse --short HEAD)"
+        echo "Message: $(git log -1 --format=%s)"
+        
+        # Save commit SHA for later steps
+        git rev-parse HEAD > /workspace/commit_sha.txt
+        git rev-parse --short HEAD > /workspace/commit_short.txt
+        git log -1 --format=%s > /workspace/commit_message.txt
+
+  # ---------------------------------------------------------------------------
+  # Build op-reth
+  # ---------------------------------------------------------------------------
+  - id: 'build'
+    name: 'rust:1.93'
+    dir: 'reth'
+    env:
+      - 'CARGO_HOME=/workspace/.cargo'
+      - 'RUSTFLAGS=-C target-cpu=native'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -euo pipefail
+        
+        echo "=== Installing build dependencies ==="
+        apt-get update -qq && apt-get install -qq -y clang libclang-dev > /dev/null
+        
+        echo "=== Building op-reth ==="
+        echo "Package: op-reth (default features: jemalloc, asm-keccak, otlp)"
+        echo "RUSTFLAGS: $${RUSTFLAGS}"
+        echo ""
+        
+        cargo build --release -p op-reth
+        
+        echo ""
+        echo "=== Build Complete ==="
+        ls -lh target/release/op-reth
+        
+        # Get binary info
+        file target/release/op-reth
+
+  # ---------------------------------------------------------------------------
+  # Upload Binary to GCS
+  # ---------------------------------------------------------------------------
+  - id: 'upload-binary'
+    name: 'gcr.io/cloud-builders/gsutil'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -euo pipefail
+        COMMIT_SHORT=$(cat /workspace/commit_short.txt)
+        ARTIFACT_NAME="op-reth-$${COMMIT_SHORT}"
+        
+        echo "=== Uploading Binary to GCS ==="
+        echo "Artifact: $${ARTIFACT_NAME}"
+        echo "Path: gs://${_GCS_BUCKET}/builds/$${ARTIFACT_NAME}"
+        
+        gsutil cp reth/target/release/op-reth \
+          "gs://${_GCS_BUCKET}/builds/$${ARTIFACT_NAME}"
+        
+        echo "Upload complete"
+
+  # ---------------------------------------------------------------------------
+  # Upload Build Metadata
+  # ---------------------------------------------------------------------------
+  - id: 'upload-metadata'
+    name: 'gcr.io/cloud-builders/gsutil'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -euo pipefail
+        COMMIT_SHA=$(cat /workspace/commit_sha.txt)
+        COMMIT_SHORT=$(cat /workspace/commit_short.txt)
+        COMMIT_MESSAGE=$(cat /workspace/commit_message.txt)
+        ARTIFACT_NAME="op-reth-$${COMMIT_SHORT}"
+        
+        echo "=== Saving Build Metadata ==="
+        
+        cat > /tmp/build-info.json << EOF
+        {
+          "repo": "${_RETH_REPO}",
+          "branch": "${_RETH_BRANCH}",
+          "commit": "$${COMMIT_SHA}",
+          "commit_short": "$${COMMIT_SHORT}",
+          "commit_message": "$${COMMIT_MESSAGE}",
+          "build_id": "${BUILD_ID}",
+          "build_time": "$(date -Iseconds)",
+          "artifact_path": "gs://${_GCS_BUCKET}/builds/$${ARTIFACT_NAME}"
+        }
+        EOF
+        
+        cat /tmp/build-info.json
+        
+        # Upload metadata JSON
+        gsutil cp /tmp/build-info.json \
+          "gs://${_GCS_BUCKET}/builds/$${ARTIFACT_NAME}.json"
+        
+        echo ""
+        echo "=== Build Complete ==="
+        echo "Binary:   gs://${_GCS_BUCKET}/builds/$${ARTIFACT_NAME}"
+        echo "Metadata: gs://${_GCS_BUCKET}/builds/$${ARTIFACT_NAME}.json"
+        echo ""
+        echo "Version:  $${COMMIT_SHORT}"
+        echo ""
+        echo "Next step:"
+        echo "  make provision RETH_VERSION=$${COMMIT_SHORT}"
+
+substitutions:
+  _RETH_REPO: 'https://github.com/paradigmxyz/reth.git'
+  _RETH_BRANCH: 'main'
+  _RETH_COMMIT: ''
+  _GCS_BUCKET: 'base-mainnet-snapshot'
+
+options:
+  machineType: 'E2_HIGHCPU_32'
+  diskSizeGb: 200
+  logging: CLOUD_LOGGING_ONLY
+
+tags: ['build']
+
+timeout: '3600s'

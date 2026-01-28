@@ -1,0 +1,85 @@
+---
+# =============================================================================
+# Run Benchmark Playbook
+# =============================================================================
+# Starts the benchmark by:
+# 1. Updating Ops Agent labels with run_id
+# 2. Starting op-reth and op-node services
+# 3. Monitoring until sync completes or timeout
+# =============================================================================
+
+- name: Run benchmark
+  hosts: all
+  become: yes
+  vars_files:
+    - ../group_vars/all.yml
+
+  vars:
+    benchmark_timeout_hours: 24
+    check_interval_seconds: 300
+
+  tasks:
+    - name: Generate run_id
+      set_fact:
+        run_id: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+
+    - name: Update Ops Agent config with run_id
+      template:
+        src: "../roles/ops_agent/templates/config.yaml.j2"
+        dest: /etc/google-cloud-ops-agent/config.yaml
+        mode: '0644'
+      notify: Restart Ops Agent
+
+    - name: Flush handlers
+      meta: flush_handlers
+
+    - name: Record benchmark start
+      copy:
+        content: |
+          {
+            "run_id": "{{ run_id }}",
+            "reth_version": "{{ reth_version }}",
+            "network": "{{ network }}",
+            "start_time": "{{ run_id }}",
+            "vm_name": "{{ vm_name }}",
+            "machine_type": "{{ machine_type }}",
+            "storage_type": "{{ storage_type }}"
+          }
+        dest: "{{ mount_point }}/benchmark-info.json"
+        mode: '0644'
+
+    - name: Ensure op-reth is running
+      systemd:
+        name: op-reth
+        state: started
+        enabled: yes
+
+    - name: Ensure op-node is running
+      systemd:
+        name: op-node
+        state: started
+        enabled: yes
+
+    - name: Display benchmark info
+      debug:
+        msg: |
+          Benchmark started!
+          - Run ID: {{ run_id }}
+          - Reth Version: {{ reth_version }}
+          - Network: {{ network }}
+          - VM: {{ vm_name }}
+          
+          Monitor via GCP Managed Prometheus with labels:
+            reth_version="{{ reth_version }}"
+            run_id="{{ run_id }}"
+          
+          Check sync status:
+            curl -s http://localhost:{{ op_reth_http_port }} -X POST \
+              -H "Content-Type: application/json" \
+              -d '{"jsonrpc":"2.0","method":"eth_syncing","params":[],"id":1}'
+
+  handlers:
+    - name: Restart Ops Agent
+      systemd:
+        name: google-cloud-ops-agent
+        state: restarted

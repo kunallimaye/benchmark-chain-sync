@@ -1,0 +1,20 @@
+# =============================================================================
+# Configure Finish Service
+# =============================================================================
+# Runs after snapshot download completes to start op-reth and op-node services.
+# =============================================================================
+
+[Unit]
+Description=Finish VM configuration after snapshot download
+After=snapshot-download.service
+ConditionPathExists={{ snapshot_status_file }}
+
+[Service]
+Type=oneshot
+ExecStart=/opt/scripts/configure-finish.sh
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

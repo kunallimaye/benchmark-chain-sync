@@ -1,0 +1,22 @@
+# =============================================================================
+# Snapshot Download Service
+# =============================================================================
+# Downloads and extracts the Base snapshot in the background.
+# On completion, triggers configure-finish.service.
+# =============================================================================
+
+[Unit]
+Description=Download and extract Base snapshot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/scripts/snapshot-download.sh
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=86400
+
+[Install]
+WantedBy=multi-user.target

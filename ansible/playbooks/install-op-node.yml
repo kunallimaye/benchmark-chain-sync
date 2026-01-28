@@ -1,0 +1,23 @@
+---
+# =============================================================================
+# Install/Update op-node Only
+# =============================================================================
+
+- name: Install op-node
+  hosts: all
+  become: yes
+  vars_files:
+    - ../group_vars/all.yml
+
+  roles:
+    - op_node
+
+  post_tasks:
+    - name: Show op-node status
+      systemd:
+        name: op-node
+      register: op_node_status
+
+    - name: Display status
+      debug:
+        msg: "op-node is {{ op_node_status.status.ActiveState }}"

@@ -1,0 +1,154 @@
+# =============================================================================
+# op-reth Benchmark Configuration
+# =============================================================================
+# This file defines the infrastructure and VM configuration for benchmarks.
+# Secrets (L1_API_KEY) should be stored in .env (see .env.example).
+# =============================================================================
+
+[project]
+project_id = "bct-prod-c3-tdx-3"
+region = "us-central1"
+zone = "us-central1-a"
+network = "base-mainnet"
+gcs_bucket = "base-mainnet-snapshot"
+
+[l1]
+rpc_endpoint = "https://json-rpc.canwswf5ohsfgrgr5coh6xisi.blockchainnodeengine.com"
+beacon_endpoint = "https://beacon.canwswf5ohsfgrgr5coh6xisi.blockchainnodeengine.com"
+
+[build]
+reth_repo = "https://github.com/paradigmxyz/reth.git"
+reth_branch = "main"
+op_node_version = "v1.16.5"
+
+# -----------------------------------------------------------------------------
+# Tracing Configuration
+# -----------------------------------------------------------------------------
+# OpenTelemetry tracing settings for Cloud Trace integration.
+# Traces help identify bottlenecks in block execution and state root computation.
+# Only op-reth supports OTLP tracing; op-node does not have this capability.
+# -----------------------------------------------------------------------------
+[tracing]
+enabled = true
+sample_ratio = 0.01     # 1% of traces (0.0 to 1.0)
+filter = "info"         # Trace filter level: trace, debug, info, warn, error
+
+# -----------------------------------------------------------------------------
+# Snapshot Download Configuration
+# -----------------------------------------------------------------------------
+# Shared download disk for snapshot storage. Downloaded once, shared read-only
+# across all VMs for extraction. This saves time and bandwidth.
+# -----------------------------------------------------------------------------
+[download]
+snapshot_url = "gs://base-mainnet-snapshot/base-mainnet-reth-1768474496.tar.zst"
+disk_name = "op-reth-snapshot-download"
+disk_size_gb = 8000
+disk_type = "pd-balanced"
+downloader_machine_type = "n2-standard-8"
+
+# -----------------------------------------------------------------------------
+# VM Defaults
+# -----------------------------------------------------------------------------
+# Defaults for [[vm]] sections. Only [defaults.vm] is supported.
+# Values here are used when not specified in a [[vm]] section.
+# -----------------------------------------------------------------------------
+[defaults.vm]
+disk_size_gb = 15000
+machine_type = "c3-standard-44"
+storage_type = "pd-balanced"
+confidential_compute = true  # Enable TDX confidential compute
+reth_version = "6df249c"
+
+# Performance tuning (for faster sync)
+# engine_cache_mb: Cross-block cache size in MB (default: 4096). Larger = more state in memory.
+# engine_workers: State root worker threads. Recommend: set to vCPU count for max parallelism.
+engine_cache_mb = 16384          # 16GB cross-block cache
+engine_workers = 44              # Set to vCPU count (c3-standard-44 = 44 vCPUs)
+
+# -----------------------------------------------------------------------------
+# VM Instances
+# -----------------------------------------------------------------------------
+# Each [[vm]] defines a benchmark instance to provision.
+# Required fields: name
+# Optional fields: machine_type, storage_type, disk_size_gb, confidential_compute,
+#                  reth_version, engine_cache_mb, engine_workers,
+#                  provisioned_iops, provisioned_throughput (for Hyperdisk)
+# All optional fields inherit from [defaults.vm] if not specified.
+# -----------------------------------------------------------------------------
+
+# =============================================================================
+# pd-balanced (baseline)
+# =============================================================================
+
+[[vm]]
+name = "op-reth-c3-standard-44-pd-balanced"
+# Uses all defaults: pd-balanced, TDX, 44 workers, 16GB cache
+
+[[vm]]
+name = "op-reth-c3-standard-44-pd-balanced-notdx"
+confidential_compute = false
+
+# [[vm]]
+# name = "op-reth-c3-standard-176-pd-balanced"
+# machine_type = "c3-standard-176"
+# storage_type = "pd-balanced"
+# engine_cache_mb = 65536
+# engine_workers = 176
+
+# [[vm]]
+# name = "op-reth-c3-standard-176-pd-balanced-notdx"
+# machine_type = "c3-standard-176"
+# storage_type = "pd-balanced"
+# engine_cache_mb = 65536
+# engine_workers = 176
+# confidential_compute = false
+
+# =============================================================================
+# pd-ssd (faster random I/O)
+# =============================================================================
+
+[[vm]]
+name = "op-reth-c3-standard-44-pd-ssd"
+storage_type = "pd-ssd"
+
+[[vm]]
+name = "op-reth-c3-standard-44-pd-ssd-notdx"
+storage_type = "pd-ssd"
+confidential_compute = false
+
+# =============================================================================
+# hyperdisk-extreme (highest performance persistent disk)
+# =============================================================================
+
+# NOTE: hyperdisk-extreme not supported on c3-standard-44, needs larger machine type
+# [[vm]]
+# name = "op-reth-c3-standard-44-hyperdisk"
+# storage_type = "hyperdisk-extreme"
+# provisioned_iops = 350000
+# provisioned_throughput = 5000
+
+# [[vm]]
+# name = "op-reth-c3-standard-44-hyperdisk-notdx"
+# storage_type = "hyperdisk-extreme"
+# provisioned_iops = 350000
+# provisioned_throughput = 5000
+# confidential_compute = false
+
+# =============================================================================
+# LSSD (local NVMe SSDs - highest performance, 176 vCPUs)
+# =============================================================================
+# 176 vCPUs, 704GB RAM, 12TB local SSD (32x375GB RAID-0)
+# No storage_type or disk_size_gb needed - LSSD provides built-in local SSDs
+
+[[vm]]
+name = "op-reth-c3-standard-176-lssd"
+machine_type = "c3-standard-176-lssd"
+engine_cache_mb = 65536          # 64GB cross-block cache (704GB RAM available)
+engine_workers = 176             # 176 vCPUs
+
+[[vm]]
+name = "op-reth-c3-standard-176-lssd-notdx"
+machine_type = "c3-standard-176-lssd"
+confidential_compute = false
+engine_cache_mb = 65536
+engine_workers = 176

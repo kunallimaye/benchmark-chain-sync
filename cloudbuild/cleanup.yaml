@@ -1,0 +1,188 @@
+# =============================================================================
+# Cleanup Resources (Terraform Destroy)
+# =============================================================================
+# Destroys benchmark instance(s). Can destroy single VM or all.
+# Does NOT destroy L1 infrastructure (BNE) - use destroy-l1 for that.
+#
+# Usage:
+#   # Destroy single VM
+#   gcloud builds submit . \
+#     --config=cloudbuild/cleanup.yaml \
+#     --substitutions=_VM=op-reth-baseline
+#
+#   # Destroy all VMs
+#   gcloud builds submit . \
+#     --config=cloudbuild/cleanup.yaml
+#
+# =============================================================================
+
+steps:
+  # ---------------------------------------------------------------------------
+  # Parse config.toml and remove specified VM(s)
+  # ---------------------------------------------------------------------------
+  - id: 'parse-config'
+    name: 'python:3.12-slim'
+    entrypoint: 'python3'
+    args:
+      - '-c'
+      - |
+        import tomllib
+        import json
+        import sys
+
+        # Load config.toml
+        with open('config.toml', 'rb') as f:
+            config = tomllib.load(f)
+
+        # Get defaults for VM
+        defaults = config.get('defaults', {}).get('vm', {})
+
+        # Merge defaults into each VM
+        vms = config.get('vm', [])
+        for vm in vms:
+            for key, value in defaults.items():
+                if key not in vm:
+                    vm[key] = value
+
+        # Filter: if _VM is set, REMOVE that VM (keep others)
+        # If _VM is empty, remove ALL VMs
+        vm_filter = '${_VM}'
+        if vm_filter:
+            # Remove the specified VM, keep others
+            original_count = len(vms)
+            vms = [vm for vm in vms if vm.get('name') != vm_filter]
+            if len(vms) == original_count:
+                print(f"WARNING: VM '{vm_filter}' not found in config.toml", file=sys.stderr)
+            print(f"Removing VM: {vm_filter}")
+            print(f"Remaining VMs: {[vm.get('name') for vm in vms]}")
+        else:
+            # Remove all VMs
+            print("Removing ALL VMs")
+            vms = []
+
+        config['vm'] = vms
+
+        with open('/workspace/config.json', 'w') as f:
+            json.dump(config, f, indent=2)
+
+  # ---------------------------------------------------------------------------
+  # Generate Terraform variables (with reduced/empty instances)
+  # ---------------------------------------------------------------------------
+  - id: 'generate-tfvars'
+    name: 'python:3.12-slim'
+    entrypoint: 'python3'
+    args:
+      - '-c'
+      - |
+        import json
+
+        with open('/workspace/config.json', 'r') as f:
+            config = json.load(f)
+
+        project = config.get('project', {})
+        l1 = config.get('l1', {})
+        vms = config.get('vm', [])
+
+        # Convert VMs list to map keyed by name
+        instances = {}
+        for vm in vms:
+            name = vm.get('name')
+            instances[name] = {
+                'machine_type': vm.get('machine_type'),
+                'storage_type': vm.get('storage_type'),
+                'disk_size_gb': vm.get('disk_size_gb'),
+                'reth_version': vm.get('reth_version'),
+                'snapshot_url': vm.get('snapshot_url'),
+                'op_node_version': vm.get('op_node_version'),
+            }
+
+        tfvars = {
+            'project_id': project.get('project_id'),
+            'region': project.get('region'),
+            'zone': project.get('zone'),
+            'network': project.get('network'),
+            'gcs_bucket': project.get('gcs_bucket'),
+            'l1_rpc_endpoint': l1.get('rpc_endpoint'),
+            'l1_beacon_endpoint': l1.get('beacon_endpoint'),
+            'create_l1': False,
+            'instances': instances,
+        }
+
+        with open('/workspace/terraform.tfvars.json', 'w') as f:
+            json.dump(tfvars, f, indent=2)
+
+        print(f"=== Terraform will manage {len(instances)} instances ===")
+        for name in instances:
+            print(f"  - {name}")
+
+  # ---------------------------------------------------------------------------
+  # Terraform Init
+  # ---------------------------------------------------------------------------
+  - id: 'terraform-init'
+    name: 'hashicorp/terraform:1.9'
+    dir: 'terraform'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        terraform init \
+          -backend-config="bucket=${_GCS_BUCKET}" \
+          -backend-config="prefix=terraform/state/benchmark"
+
+  # ---------------------------------------------------------------------------
+  # Terraform Apply (destroys removed instances)
+  # ---------------------------------------------------------------------------
+  - id: 'terraform-apply'
+    name: 'hashicorp/terraform:1.9'
+    dir: 'terraform'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        set -e
+        
+        echo "=== Applying Terraform (destroying removed instances) ==="
+        terraform apply -auto-approve \
+          -var-file=/workspace/terraform.tfvars.json
+        
+        echo ""
+        echo "=== Remaining instances ==="
+        terraform output -json instances || echo '{}'
+
+  # ---------------------------------------------------------------------------
+  # Upload updated state to GCS
+  # ---------------------------------------------------------------------------
+  - id: 'upload-to-gcs'
+    name: 'gcr.io/cloud-builders/gsutil'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+        
+        echo "=== Uploading updated files to GCS ==="
+        
+        # Generate and upload instances.json from terraform output
+        cd terraform
+        terraform output -json instances > /workspace/instances.json 2>/dev/null || echo '{}' > /workspace/instances.json
+        gsutil cp /workspace/instances.json "gs://${_GCS_BUCKET}/terraform/instances.json"
+        
+        # Update inventory if it exists
+        if [ -f ../ansible/inventory/hosts.yml ]; then
+          gsutil cp ../ansible/inventory/hosts.yml "gs://${_GCS_BUCKET}/ansible/inventory.yml"
+        fi
+        
+        echo ""
+        echo "=== Cleanup Complete ==="
+        echo "Note: L1 infrastructure (BNE) was preserved."
+
+substitutions:
+  _GCS_BUCKET: 'base-mainnet-snapshot'
+  _VM: ''  # Optional: specific VM to remove. If empty, removes all.
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+tags: ['cleanup']
+
+timeout: '600s'

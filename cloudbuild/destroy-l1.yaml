@@ -1,0 +1,71 @@
+# =============================================================================
+# Destroy L1 Infrastructure (BNE)
+# =============================================================================
+# Destroys the Blockchain Node Engine node.
+#
+# WARNING: This will delete the L1 node! Re-syncing takes several days.
+#
+# Usage:
+#   gcloud builds submit . \
+#     --config=cloudbuild/destroy-l1.yaml \
+#     --substitutions=_NETWORK=base-mainnet
+#
+# =============================================================================
+
+steps:
+  # ---------------------------------------------------------------------------
+  # Terraform Init
+  # ---------------------------------------------------------------------------
+  - id: 'terraform-init'
+    name: 'hashicorp/terraform:1.9'
+    dir: 'terraform'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        terraform init \
+          -backend-config="bucket=${_GCS_BUCKET}" \
+          -backend-config="prefix=terraform/state/l1-${_NETWORK}"
+
+  # ---------------------------------------------------------------------------
+  # Terraform Destroy (BNE)
+  # ---------------------------------------------------------------------------
+  - id: 'terraform-destroy'
+    name: 'hashicorp/terraform:1.9'
+    dir: 'terraform'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        set -e
+        
+        echo "=== Destroying L1 Infrastructure ==="
+        echo "Network: ${_NETWORK}"
+        echo ""
+        echo "WARNING: Re-syncing BNE takes several days!"
+        echo ""
+        
+        terraform destroy -auto-approve \
+          -var="project_id=${_PROJECT_ID}" \
+          -var="region=${_REGION}" \
+          -var="zone=${_ZONE}" \
+          -var="network=${_NETWORK}" \
+          -var="create_l1=true" \
+          -var="gcs_bucket=${_GCS_BUCKET}"
+        
+        echo ""
+        echo "=== L1 Infrastructure Destroyed ==="
+
+substitutions:
+  _PROJECT_ID: 'bct-prod-c3-tdx-3'
+  _REGION: 'us-central1'
+  _ZONE: 'us-central1-a'
+  _NETWORK: 'base-mainnet'
+  _GCS_BUCKET: 'base-mainnet-snapshot'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+tags: ['destroy-l1']
+
+timeout: '3600s'  # 1 hour

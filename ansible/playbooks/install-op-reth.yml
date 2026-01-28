@@ -1,0 +1,23 @@
+---
+# =============================================================================
+# Install/Update op-reth Only
+# =============================================================================
+
+- name: Install op-reth
+  hosts: all
+  become: yes
+  vars_files:
+    - ../group_vars/all.yml
+
+  roles:
+    - op_reth
+
+  post_tasks:
+    - name: Show op-reth status
+      systemd:
+        name: op-reth
+      register: op_reth_status
+
+    - name: Display status
+      debug:
+        msg: "op-reth is {{ op_reth_status.status.ActiveState }}"

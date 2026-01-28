@@ -1,0 +1,104 @@
+# =============================================================================
+# GCP Ops Agent Configuration for op-reth Benchmark
+# =============================================================================
+# Scrapes metrics from op-reth and op-node, exports to GCP Managed Prometheus.
+# Optionally receives OTLP traces and forwards to Cloud Trace.
+# =============================================================================
+
+{% if tracing_enabled | default(true) %}
+# -----------------------------------------------------------------------------
+# OTLP Receiver (for OpenTelemetry traces from op-reth)
+# -----------------------------------------------------------------------------
+combined:
+  receivers:
+    otlp:
+      type: otlp
+      grpc_endpoint: 0.0.0.0:4317
+{% endif %}
+
+# -----------------------------------------------------------------------------
+# Metrics Configuration
+# -----------------------------------------------------------------------------
+metrics:
+  receivers:
+    prometheus:
+      type: prometheus
+      config:
+        scrape_configs:
+          # op-reth metrics
+          - job_name: 'op-reth'
+            scrape_interval: 15s
+            static_configs:
+              - targets: ['localhost:{{ op_reth_metrics_port }}']
+                labels:
+                  reth_version: '{{ reth_version | default("unknown") }}'
+                  run_id: '{{ run_id | default("unknown") }}'
+                  network: '{{ network | default("unknown") }}'
+                  vm_name: '{{ vm_name | default("unknown") }}'
+                  machine_type: '{{ machine_type | default("unknown") }}'
+                  storage_type: '{{ storage_type | default("unknown") }}'
+
+          # op-node metrics
+          - job_name: 'op-node'
+            scrape_interval: 15s
+            static_configs:
+              - targets: ['localhost:{{ op_node_metrics_port }}']
+                labels:
+                  reth_version: '{{ reth_version | default("unknown") }}'
+                  run_id: '{{ run_id | default("unknown") }}'
+                  network: '{{ network | default("unknown") }}'
+                  vm_name: '{{ vm_name | default("unknown") }}'
+                  machine_type: '{{ machine_type | default("unknown") }}'
+                  storage_type: '{{ storage_type | default("unknown") }}'
+
+  service:
+    pipelines:
+      prometheus_pipeline:
+        receivers:
+          - prometheus
+{% if tracing_enabled | default(true) %}
+      otlp_metrics_pipeline:
+        receivers:
+          - otlp
+{% endif %}
+
+{% if tracing_enabled | default(true) %}
+# -----------------------------------------------------------------------------
+# Traces Configuration
+# -----------------------------------------------------------------------------
+traces:
+  service:
+    pipelines:
+      otlp_traces_pipeline:
+        receivers:
+          - otlp
+{% endif %}
+
+# -----------------------------------------------------------------------------
+# Logging Configuration
+# -----------------------------------------------------------------------------
+logging:
+  receivers:
+    syslog:
+      type: files
+      include_paths:
+        - /var/log/messages
+        - /var/log/syslog
+
+    op_reth_log:
+      type: files
+      include_paths:
+        - {{ op_reth_log_dir }}/*.log
+
+    op_node_log:
+      type: files
+      include_paths:
+        - {{ op_node_log_dir }}/*.log
+
+  service:
+    pipelines:
+      default_pipeline:
+        receivers:
+          - syslog
+          - op_reth_log
+          - op_node_log

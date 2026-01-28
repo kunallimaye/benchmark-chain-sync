@@ -1,0 +1,156 @@
+# =============================================================================
+# Snapshot Extract Role
+# =============================================================================
+# Extracts snapshot from shared download disk to local data disk.
+# On completion, starts op-reth and op-node services.
+#
+# This role is designed to be FAST - it starts the extraction service
+# asynchronously and exits immediately. The extraction script handles
+# all validation internally.
+# =============================================================================
+
+---
+- name: Install required packages
+  apt:
+    name:
+      - zstd
+      - pv
+    state: present
+    update_cache: yes
+
+- name: Create scripts directory
+  file:
+    path: /opt/scripts
+    state: directory
+    mode: '0755'
+    owner: root
+    group: root
+
+- name: Deploy snapshot extract script
+  template:
+    src: snapshot-extract.sh.j2
+    dest: /opt/scripts/snapshot-extract.sh
+    mode: '0755'
+    owner: root
+    group: root
+
+- name: Deploy snapshot-extract service
+  template:
+    src: snapshot-extract.service.j2
+    dest: /etc/systemd/system/snapshot-extract.service
+    mode: '0644'
+
+- name: Reload systemd daemon
+  systemd:
+    daemon_reload: yes
+
+- name: Enable snapshot-extract service
+  systemd:
+    name: snapshot-extract.service
+    enabled: yes
+
+# ---------------------------------------------------------------------------
+# Safety Check: Don't extract if data already exists
+# ---------------------------------------------------------------------------
+- name: Check if reth database already exists
+  stat:
+    path: "{{ op_reth_data_dir }}/db/mdbx.dat"
+  register: reth_db_exists
+
+# Fast check: Use mountpoint command instead of stat on huge file
+- name: Check if download disk is mounted (fast check)
+  command: mountpoint -q {{ download_mount_point }}
+  register: download_mounted
+  failed_when: false
+  changed_when: false
+
+- name: Display current state
+  debug:
+    msg: |
+      Reth database exists: {{ reth_db_exists.stat.exists }}
+      Download disk mounted: {{ download_mounted.rc == 0 }}
+
+# ---------------------------------------------------------------------------
+# Handle case: Data already exists (skip extraction)
+# ---------------------------------------------------------------------------
+- name: Skip extraction - data already exists
+  debug:
+    msg: |
+      ============================================================
+      EXTRACTION SKIPPED - DATA ALREADY EXISTS
+      ============================================================
+      
+      Reth database found at: {{ op_reth_data_dir }}/db/mdbx.dat
+      
+      To force re-extraction, manually remove the database:
+        sudo rm -rf {{ op_reth_data_dir }}/db
+        sudo systemctl start snapshot-extract.service
+      
+      ============================================================
+  when: reth_db_exists.stat.exists
+
+- name: Start services if data exists
+  systemd:
+    name: "{{ item }}"
+    state: started
+    enabled: yes
+  loop:
+    - op-reth.service
+    - op-node.service
+  when: reth_db_exists.stat.exists
+
+# ---------------------------------------------------------------------------
+# Handle case: Download disk not mounted
+# ---------------------------------------------------------------------------
+- name: Fail if download disk not mounted
+  fail:
+    msg: |
+      Download disk not mounted at {{ download_mount_point }}.
+      
+      Ensure the download disk is attached to this VM.
+      Run 'make provision' to attach the download disk.
+  when:
+    - not reth_db_exists.stat.exists
+    - download_mounted.rc != 0
+
+# ---------------------------------------------------------------------------
+# Start extraction (async - runs in background)
+# The extraction script handles all validation (snapshot file exists, etc.)
+# ---------------------------------------------------------------------------
+- name: Start snapshot extraction service
+  systemd:
+    name: snapshot-extract.service
+    state: started
+  async: 10
+  poll: 0
+  when:
+    - not reth_db_exists.stat.exists
+    - download_mounted.rc == 0
+
+- name: Display extraction started message
+  debug:
+    msg: |
+      ============================================================
+      SNAPSHOT EXTRACTION STARTED IN BACKGROUND
+      ============================================================
+      
+      Extracting from: {{ snapshot_file }}
+      Extracting to:   {{ op_reth_data_dir }}
+      
+      This will take 1-2 hours depending on disk speed.
+      Cloud Build will now exit. The VM will continue independently.
+      
+      Monitor progress with:
+        make extract-status VM={{ vm_name }}
+      
+      Or SSH to the VM:
+        gcloud compute ssh {{ vm_name }} --zone={{ zone | default('us-central1-a') }} \
+          --command='cat {{ extract_status_file }}'
+      
+      When complete, op-reth and op-node will start automatically.
+      
+      Status file: {{ extract_status_file }}
+      ============================================================
+  when:
+    - not reth_db_exists.stat.exists
+    - download_mounted.rc == 0

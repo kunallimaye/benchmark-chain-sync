@@ -1,0 +1,36 @@
+---
+# =============================================================================
+# Ops Agent Role - GCP Managed Prometheus
+# =============================================================================
+
+- name: Check if Ops Agent is installed
+  stat:
+    path: /usr/bin/google_cloud_ops_agent
+  register: ops_agent_installed
+
+- name: Download Ops Agent installer
+  get_url:
+    url: https://dl.google.com/cloudagents/add-google-cloud-ops-agent-repo.sh
+    dest: /tmp/add-google-cloud-ops-agent-repo.sh
+    mode: '0755'
+  when: not ops_agent_installed.stat.exists
+
+- name: Install Ops Agent
+  command: bash /tmp/add-google-cloud-ops-agent-repo.sh --also-install
+  args:
+    creates: /usr/bin/google_cloud_ops_agent
+  when: not ops_agent_installed.stat.exists
+
+- name: Deploy Ops Agent configuration
+  template:
+    src: config.yaml.j2
+    dest: /etc/google-cloud-ops-agent/config.yaml
+    mode: '0644'
+  notify: Restart Ops Agent
+
+- name: Ensure Ops Agent is enabled and started
+  systemd:
+    name: google-cloud-ops-agent
+    enabled: yes
+    state: started
+    daemon_reload: yes

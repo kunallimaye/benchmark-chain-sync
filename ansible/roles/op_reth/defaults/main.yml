@@ -1,0 +1,35 @@
+---
+# =============================================================================
+# op-reth Role Defaults
+# =============================================================================
+
+# Binary source - downloaded from GCS
+op_reth_artifact_name: "op-reth-{{ reth_version }}"
+
+# Chain configuration (mapped from network name to reth chain name)
+op_reth_chain: "{{ reth_chain_map[network] | default(network) }}"
+
+# Whether to start services (set to false for background snapshot download)
+start_services: true
+
+# Sequencer URL (derived from network)
+op_reth_sequencer_url: "{{ base_sequencer_urls[network] }}"
+
+# -----------------------------------------------------------------------------
+# Performance Tuning
+# -----------------------------------------------------------------------------
+# These settings optimize op-reth for faster sync and execution.
+# engine_cache_mb: Cross-block cache size in MB. Larger = more state in memory.
+# engine_workers: State root worker threads. Recommend: set to vCPU count.
+# engine_reserved_cores: CPU cores reserved for non-Reth processes (0 = use all).
+engine_cache_mb: 4096            # Cross-block cache size in MB (Reth default)
+engine_workers: 0                # State root workers (0 = Reth auto-detect)
+engine_reserved_cores: 0         # CPU cores reserved for non-Reth processes
+
+# -----------------------------------------------------------------------------
+# Tracing Configuration (OpenTelemetry to Cloud Trace)
+# -----------------------------------------------------------------------------
+# These are typically set via Ansible inventory from Terraform
+tracing_enabled: true
+tracing_sample_ratio: 0.01
+tracing_filter: "info"
