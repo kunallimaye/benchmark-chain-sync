@@ -8,21 +8,20 @@
 #   1. make create-l1                    # Create L1 BNE node (one-time)
 #   2. make build-reth                   # Build op-reth binary
 #   3. make build-op-node                # Build op-node binary
-#   4. make create-download-disk         # Create shared download disk (one-time)
-#   5. make download                     # Download snapshot to shared disk
-#   6. Edit config.toml with VM configs  # Define VMs to provision
-#   7. make provision                    # Create all VMs (or VM=name for one)
-#   8. make configure                    # Configure all VMs (or VM=name)
-#   9. make benchmark VM=name            # Run benchmark on specific VM
-#  10. make cleanup                      # Destroy all VMs (or VM=name)
+#   4. make create-snapshot VM=<name>    # Create golden snapshot from synced VM
+#   5. Edit config.toml with VM configs  # Define VMs + snapshot name
+#   6. make provision                    # Create all VMs (or VM=name for one)
+#   7. make configure                    # Configure all VMs (or VM=name)
+#   8. make benchmark VM=name            # Run benchmark on specific VM
+#   9. make cleanup                      # Destroy all VMs (or VM=name)
 # =============================================================================
 
 .PHONY: build-reth build-op-node provision provision-plan configure benchmark \
         cleanup list-instances \
         create-l1 destroy-l1 status-l1 \
-        create-download-disk download download-status delete-download-disk \
+        create-snapshot list-snapshots delete-snapshot \
         status validate-terraform help \
-        build-status configure-status benchmark-status extract-status
+        build-status configure-status benchmark-status
 
 # -----------------------------------------------------------------------------
 # Load environment variables from .env if it exists
@@ -50,11 +49,14 @@ RETH_BRANCH := $(shell grep -A2 '^\[build\]' config.toml | grep 'reth_branch' | 
 RETH_COMMIT ?=
 OP_NODE_VERSION := $(shell grep -A3 '^\[build\]' config.toml | grep 'op_node_version' | cut -d'"' -f2)
 
-# Download disk name
-DOWNLOAD_DISK_NAME := $(shell grep -A1 '^\[download\]' config.toml | grep 'disk_name' | cut -d'"' -f2)
+# Snapshot configuration
+SNAPSHOT_NAME := $(shell grep -A1 '^\[snapshot\]' config.toml | grep 'name' | cut -d'"' -f2)
 
 # VM filter (optional - if set, only operate on this VM)
 VM ?=
+
+# Snapshot name for delete-snapshot target
+SNAPSHOT ?=
 
 # =============================================================================
 # L1 Infrastructure (BNE)
@@ -120,63 +122,79 @@ build-op-node: ## Build op-node binary (extracts from Docker image)
 		--substitutions=_OP_NODE_VERSION=$(OP_NODE_VERSION),_GCS_BUCKET=$(GCS_BUCKET)
 
 # =============================================================================
-# Snapshot Download (Shared Disk)
+# Golden Snapshot Management
 # =============================================================================
 
-create-download-disk: ## Create shared download disk (one-time)
-	@echo "=== Creating Download Disk ==="
-	@echo "Disk name: $(DOWNLOAD_DISK_NAME)"
-	@echo ""
-	gcloud builds submit . \
-		--config=cloudbuild/create-download-disk.yaml \
+create-snapshot: ## Create golden snapshot from a running VM (requires VM=name)
+	@if [ -z "$(VM)" ]; then \
+		echo "ERROR: VM is required"; \
+		echo "Usage: make create-snapshot VM=<name>"; \
+		echo ""; \
+		echo "This will:"; \
+		echo "  1. Stop op-reth on the VM (briefly)"; \
+		echo "  2. Create a snapshot of the data disk"; \
+		echo "  3. Restart op-reth"; \
+		echo ""; \
+		echo "Available VMs:"; \
+		gcloud compute instances list --project=$(PROJECT_ID) --filter="name~op-reth" --format="value(name)" | sed 's/^/  /'; \
+		exit 1; \
+	fi
+	@echo "=== Creating Golden Snapshot from $(VM) ==="
+	@DISK_NAME="$(VM)-data"; \
+	SNAPSHOT_NAME="op-reth-golden-$$(date +%Y-%m-%d-%H-%M)"; \
+	echo "Source disk: $$DISK_NAME"; \
+	echo "Snapshot name: $$SNAPSHOT_NAME"; \
+	echo ""; \
+	read -p "This will briefly stop op-reth. Continue? [y/N] " confirm && [ "$$confirm" = "y" ] || exit 1; \
+	echo ""; \
+	echo "Stopping op-reth..."; \
+	gcloud compute ssh $(VM) --zone=$(ZONE) --project=$(PROJECT_ID) \
+		--command="sudo systemctl stop op-reth op-node" 2>/dev/null || true; \
+	echo "Creating snapshot..."; \
+	gcloud compute snapshots create $$SNAPSHOT_NAME \
+		--source-disk=$$DISK_NAME \
+		--source-disk-zone=$(ZONE) \
 		--project=$(PROJECT_ID) \
-		--substitutions=_GCS_BUCKET=$(GCS_BUCKET)
+		--description="Golden snapshot from $(VM) at $$(date -Iseconds)"; \
+	echo "Restarting op-reth..."; \
+	gcloud compute ssh $(VM) --zone=$(ZONE) --project=$(PROJECT_ID) \
+		--command="sudo systemctl start op-reth op-node" 2>/dev/null || true; \
+	echo ""; \
+	echo "Snapshot created: $$SNAPSHOT_NAME"; \
+	echo ""; \
+	echo "Update config.toml [snapshot] section:"; \
+	echo "  name = \"$$SNAPSHOT_NAME\""
 
-download: ## Download snapshot to shared disk (async, ~2-3 hours)
-	@echo "=== Downloading Snapshot ==="
-	@echo "This will download the snapshot to the shared download disk."
-	@echo "Any existing snapshot on the disk will be overwritten."
-	@echo "Build runs async - use 'make download-status' to monitor."
-	@echo ""
-	@read -p "Continue? [y/N] " confirm && [ "$$confirm" = "y" ] || exit 1
-	gcloud builds submit . \
-		--config=cloudbuild/download.yaml \
+list-snapshots: ## List golden snapshots
+	@echo "=== Golden Snapshots ==="
+	@gcloud compute snapshots list \
 		--project=$(PROJECT_ID) \
-		--async
+		--filter="name~op-reth-golden" \
+		--format="table(name,status,diskSizeGb,creationTimestamp.date('%Y-%m-%d %H:%M'),description)" \
+		2>/dev/null || echo "No snapshots found"
+	@echo ""
+	@echo "Current config.toml snapshot: $(SNAPSHOT_NAME)"
 
-download-status: ## Check download progress
-	@echo "=== Download Disk Status ==="
-	@echo ""
-	@echo "=== Disk Info ==="
-	@gcloud compute disks describe $(DOWNLOAD_DISK_NAME) \
-		--zone=$(ZONE) \
-		--project=$(PROJECT_ID) \
-		--format="table(name,sizeGb,status,type)" \
-		2>/dev/null || echo "Download disk not found. Run 'make create-download-disk' first."
-	@echo ""
-	@echo "=== Downloader VM ==="
-	@gcloud compute instances describe op-reth-downloader \
-		--zone=$(ZONE) \
-		--project=$(PROJECT_ID) \
-		--format="table(name,status,machineType)" \
-		2>/dev/null && \
-		(echo "" && echo "=== Download Progress ===" && \
-		gcloud compute ssh op-reth-downloader \
-			--zone=$(ZONE) \
-			--project=$(PROJECT_ID) \
-			--command='cat /mnt/download/.download-status 2>/dev/null || echo "No status file yet"' \
-			2>/dev/null) || \
-		echo "Downloader VM not running (download complete or not started)"
-
-delete-download-disk: ## Delete shared download disk (WARNING: permanent!)
-	@echo "=== Deleting Download Disk ==="
-	@echo "WARNING: This will permanently delete the download disk and any snapshot on it!"
-	@echo ""
-	@read -p "Type 'delete' to confirm: " confirm && [ "$$confirm" = "delete" ] || exit 1
-	gcloud compute disks delete $(DOWNLOAD_DISK_NAME) \
-		--zone=$(ZONE) \
+delete-snapshot: ## Delete a golden snapshot (requires SNAPSHOT=name)
+	@if [ -z "$(SNAPSHOT)" ]; then \
+		echo "ERROR: SNAPSHOT is required"; \
+		echo "Usage: make delete-snapshot SNAPSHOT=<name>"; \
+		echo ""; \
+		echo "Available snapshots:"; \
+		gcloud compute snapshots list --project=$(PROJECT_ID) --filter="name~op-reth-golden" --format="value(name)" | sed 's/^/  /'; \
+		exit 1; \
+	fi
+	@echo "=== Deleting Snapshot: $(SNAPSHOT) ==="
+	@if [ "$(SNAPSHOT)" = "$(SNAPSHOT_NAME)" ]; then \
+		echo "WARNING: This is the snapshot configured in config.toml!"; \
+		echo "VMs will fail to provision without a valid snapshot."; \
+		echo ""; \
+	fi
+	@read -p "Are you sure you want to delete $(SNAPSHOT)? [y/N] " confirm && [ "$$confirm" = "y" ] || exit 1
+	gcloud compute snapshots delete $(SNAPSHOT) \
 		--project=$(PROJECT_ID) \
 		--quiet
+	@echo "Snapshot deleted: $(SNAPSHOT)"
 
 # =============================================================================
 # Provision Infrastructure (Terraform only)
@@ -278,7 +296,7 @@ build-status: ## Show status of most recent build (TYPE=configure|provision|benc
 		echo "  gcloud builds log $$BUILD_ID --project=$(PROJECT_ID) $$REGION_FLAG"; \
 	fi
 
-configure-status: ## Show configure/extract status for a VM (requires VM=name)
+configure-status: ## Show configure/sync status for a VM (requires VM=name)
 	@if [ -z "$(VM)" ]; then \
 		echo "Usage: make configure-status VM=<name>"; \
 		echo ""; \
@@ -293,26 +311,7 @@ configure-status: ## Show configure/extract status for a VM (requires VM=name)
 		--ssh-flag="-o Hostname=nic0.$(VM).$(ZONE).c.$(PROJECT_ID).internal.gcpnode.com" \
 		--command='\
 		echo ""; \
-		echo "=== Extract Status ==="; \
-		if [ -f /mnt/data/.extract-status ]; then \
-			cat /mnt/data/.extract-status | jq . 2>/dev/null || cat /mnt/data/.extract-status; \
-		else \
-			echo "No extract status file found"; \
-		fi; \
-		echo ""; \
-		echo "=== Download Disk ==="; \
-		if [ -d /mnt/download ]; then \
-			if [ -f /mnt/download/snapshot.tar.zst ]; then \
-				ls -lh /mnt/download/snapshot.tar.zst; \
-			else \
-				echo "Snapshot file not found on download disk"; \
-			fi; \
-		else \
-			echo "Download disk not mounted"; \
-		fi; \
-		echo ""; \
 		echo "=== Services ==="; \
-		systemctl is-active snapshot-extract.service 2>/dev/null && echo "snapshot-extract: RUNNING" || echo "snapshot-extract: not running"; \
 		systemctl is-active op-reth.service 2>/dev/null && echo "op-reth: RUNNING" || echo "op-reth: not running"; \
 		systemctl is-active op-node.service 2>/dev/null && echo "op-node: RUNNING" || echo "op-node: not running"; \
 		echo ""; \
@@ -321,15 +320,15 @@ configure-status: ## Show configure/extract status for a VM (requires VM=name)
 			echo "Database exists"; \
 			du -sh /mnt/data/op-reth/db 2>/dev/null || true; \
 		else \
-			echo "Database not found (extraction may be in progress)"; \
+			echo "Database not found"; \
 		fi; \
 		echo ""; \
-		echo "=== Recent Logs (snapshot-extract) ==="; \
-		journalctl -u snapshot-extract.service -n 5 --no-pager 2>/dev/null || echo "No logs available"; \
+		echo "=== Disk Usage ==="; \
+		df -h /mnt/data 2>/dev/null || echo "Data disk not mounted"; \
+		echo ""; \
+		echo "=== Recent Logs (op-reth) ==="; \
+		journalctl -u op-reth.service -n 10 --no-pager 2>/dev/null || echo "No logs available"; \
 	' 2>/dev/null || echo "ERROR: Could not SSH to $(VM). VM may not exist or SSH may not be ready."
-
-extract-status: ## Alias for configure-status (requires VM=name)
-	@$(MAKE) configure-status VM=$(VM)
 
 benchmark-status: ## Show status of most recent benchmark build
 	@$(MAKE) build-status TYPE=benchmark
@@ -390,12 +389,15 @@ status: ## Show current build artifacts and infrastructure
 	@echo "=== Build Artifacts ==="
 	@gsutil ls -l "gs://$(GCS_BUCKET)/builds/op-reth-*" 2>/dev/null | grep -v '.json$$' | head -20 || echo "  No builds found"
 	@echo ""
-	@echo "=== Download Disk ==="
-	@gcloud compute disks describe $(DOWNLOAD_DISK_NAME) \
-		--zone=$(ZONE) \
-		--project=$(PROJECT_ID) \
-		--format="value(name,sizeGb,status)" \
-		2>/dev/null && echo " GB" || echo "  Not found"
+	@echo "=== Golden Snapshot ==="
+	@if [ -n "$(SNAPSHOT_NAME)" ]; then \
+		gcloud compute snapshots describe $(SNAPSHOT_NAME) \
+			--project=$(PROJECT_ID) \
+			--format="table(name,status,diskSizeGb,storageBytes.yesno(yes='size: ',no=''):label='')" \
+			2>/dev/null || echo "  $(SNAPSHOT_NAME) (not found)"; \
+	else \
+		echo "  Not configured in config.toml"; \
+	fi
 	@echo ""
 	@echo "=== VMs in config.toml ==="
 	@python3 -c "import tomllib; c=tomllib.load(open('config.toml','rb')); [print(f\"  {v.get('name')}\") for v in c.get('vm',[])]" || echo "  (none)"
@@ -435,21 +437,28 @@ help: ## Show this help
 	@echo ""
 	@echo "Variables:"
 	@echo "  VM             Filter to specific VM name (optional)"
+	@echo "  SNAPSHOT       Snapshot name for delete-snapshot (required)"
 	@echo "  RETH_COMMIT    Override git commit for build (optional)"
 	@echo ""
-	@echo "New Workflow (with shared download disk):"
+	@echo "Workflow (with golden snapshot):"
 	@echo "  1. make create-l1                    # Create L1 node (one-time, takes days)"
 	@echo "  2. Create API key in GCP Console, add to .env"
-	@echo "  3. make create-download-disk         # Create shared download disk (one-time)"
-	@echo "  4. make download                     # Download snapshot (once per snapshot version)"
-	@echo "  5. Edit config.toml with [[vm]] sections"
-	@echo "  6. make provision                    # Create all VMs"
-	@echo "  7. make configure                    # Configure all VMs (parallel extraction!)"
-	@echo "  8. make benchmark VM=<name>"
-	@echo "  9. make cleanup                      # Destroy all VMs (keeps download disk)"
+	@echo "  3. make build-reth && make build-op-node"
+	@echo "  4. Sync a VM to desired block height (manual)"
+	@echo "  5. make create-snapshot VM=<name>    # Create golden snapshot"
+	@echo "  6. Edit config.toml: set [snapshot] name and [[vm]] sections"
+	@echo "  7. make provision                    # Create VMs (disks from snapshot)"
+	@echo "  8. make configure                    # Configure VMs (LSSD: rsync from temp disk)"
+	@echo "  9. make benchmark VM=<name>          # Run benchmark"
+	@echo "  10. make cleanup                     # Destroy VMs"
+	@echo ""
+	@echo "Golden Snapshot Management:"
+	@echo "  make list-snapshots                  # List available golden snapshots"
+	@echo "  make create-snapshot VM=<name>       # Create new snapshot from synced VM"
+	@echo "  make delete-snapshot SNAPSHOT=<name> # Delete old snapshot"
 	@echo ""
 	@echo "Single VM operations:"
 	@echo "  make provision VM=<name>             # Create specific VM"
 	@echo "  make configure VM=<name>             # Configure specific VM"
-	@echo "  make configure-status VM=<name>      # Check extraction progress"
+	@echo "  make configure-status VM=<name>      # Check VM status"
 	@echo "  make cleanup VM=<name>               # Destroy specific VM"

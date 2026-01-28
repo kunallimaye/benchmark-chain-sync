@@ -1,0 +1,17 @@
+---
+# =============================================================================
+# LSSD Copy Role Defaults
+# =============================================================================
+# Copies data from a temporary disk (created from golden snapshot) to LSSD RAID.
+# This role is only used for LSSD machines where we can't create disk from snapshot.
+# =============================================================================
+
+# Mount points
+mount_point: "/mnt/data"
+snapshot_mount_point: "/mnt/snapshot"
+
+# Temp disk device name (attached by configure.yaml Cloud Build)
+snapshot_disk_device: "/dev/disk/by-id/google-snapshot-disk"
+
+# rsync options for efficient copy
+rsync_options: "-aHAX --info=progress2"

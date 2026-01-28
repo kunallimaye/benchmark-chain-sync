@@ -25,30 +25,28 @@ make help                     # Show all available targets
 make build-reth               # Build op-reth binary
 make build-op-node            # Build op-node binary (extract from Docker)
 
-# Shared download disk (one-time setup)
-make create-download-disk     # Create shared 8TB download disk
-make download                 # Download snapshot to shared disk (~2-3 hours)
-make download-status          # Check download progress
+# Golden snapshot management
+make list-snapshots           # List available golden snapshots
+make create-snapshot VM=<name> # Create golden snapshot from synced VM
+make delete-snapshot SNAPSHOT=<name>  # Delete old snapshot
 
 # Provision and configure VMs
-make provision                # Create all VMs from config.toml
+make provision                # Create all VMs from config.toml (disks from snapshot)
 make provision VM=<name>      # Create specific VM
-make configure                # Configure all VMs (extract + start services)
+make configure                # Configure all VMs (LSSD: rsync from temp disk)
 make configure VM=<name>      # Configure specific VM
 
 # Status and monitoring
-make status                   # Show builds, VMs, L1, download disk status
+make status                   # Show builds, VMs, L1, snapshot status
 make status-l1                # Check BNE node sync status
 make list-vms                 # List VMs in config.toml
 make list-instances           # List active Terraform-managed instances
-make configure-status VM=<name>  # Check extraction progress on VM
-make extract-status VM=<name>    # Alias for configure-status
+make configure-status VM=<name>  # Check VM status
 make build-status TYPE=<type> # Show status of any build type
 
 # Cleanup
-make cleanup                  # Destroy all VMs (keeps download disk)
+make cleanup                  # Destroy all VMs
 make cleanup VM=<name>        # Destroy specific VM
-make delete-download-disk     # Delete download disk (with confirmation)
 ```
 
 ## Configuration Files
@@ -59,7 +57,7 @@ make delete-download-disk     # Delete download disk (with confirmation)
 [l1]                # L1 Ethereum endpoints (BNE)
 [build]             # Build settings (reth_repo, reth_branch, op_node_version)
 [tracing]           # OpenTelemetry tracing settings (Cloud Trace)
-[download]          # Shared download disk settings (NEW)
+[snapshot]          # Golden snapshot settings (name, disk_size_gb)
 [defaults.vm]       # Default VM settings (inherited by [[vm]] sections)
 [[vm]]              # VM instance definitions (can have multiple)
 ```
@@ -69,43 +67,37 @@ make delete-download-disk     # Delete download disk (with confirmation)
 L1_API_KEY=<your-bne-api-key>
 ```
 
-## Architecture: Shared Download Disk
+## Architecture: Golden Snapshot Provisioning
 
-The snapshot is downloaded once to a shared disk, then extracted to each VM:
+VMs are provisioned from a golden snapshot (created from a fully synced VM):
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                        DOWNLOAD PHASE (once per snapshot)                    │
-│   make create-download-disk  →  make download                                │
-│                                                                              │
-│   ┌─────────────────────────┐                                                │
-│   │  Download Disk (8TB)    │  ← Downloaded via temp n2-standard-8 VM        │
-│   │  pd-balanced            │                                                │
-│   │  /snapshot.tar.zst      │                                                │
-│   └───────────┬─────────────┘                                                │
-│               │                                                              │
-├───────────────┼─────────────────────────────────────────────────────────────┤
-│               │  PROVISION + CONFIGURE PHASE (parallel)                      │
-│               │  make provision  →  make configure                           │
-│               │                                                              │
-│   Attached READ-ONLY to all VMs simultaneously                               │
-│               │                                                              │
-│     ┌─────────┴─────────┬───────────────┬───────────────┐                    │
-│     ▼                   ▼               ▼               ▼                    │
-│   ┌───────────┐   ┌───────────┐   ┌───────────┐   ┌───────────┐             │
-│   │ pd-balanced│  │ pd-ssd    │  │ hyperdisk │   │ lssd      │             │
-│   │ 15TB      │   │ 15TB      │   │ 15TB      │   │ 12TB      │             │
-│   └───────────┘   └───────────┘   └───────────┘   └───────────┘             │
-│                                                                              │
-│   Each VM extracts from shared disk to its own /mnt/data                     │
-└─────────────────────────────────────────────────────────────────────────────┘
+│                    Golden Snapshot: op-reth-golden-YYYY-MM-DD-HH-MM          │
+│                    Created from synced VM, ~5TB compressed                   │
+└───────────────────────────────┬─────────────────────────────────────────────┘
+                                │
+              ┌─────────────────┼─────────────────────────────────┐
+              │                 │                                 │
+              ▼                 ▼                                 ▼
+    ┌─────────────────┐   ┌─────────────────┐           ┌─────────────────┐
+    │ pd-balanced     │   │ pd-ssd          │           │ LSSD machine    │
+    │ Create disk     │   │ Create disk     │           │                 │
+    │ from snapshot   │   │ from snapshot   │           │ 1. Create temp  │
+    │ (~10-15 min)    │   │ (~10-15 min)    │           │    pd-balanced  │
+    │                 │   │                 │           │    from snapshot│
+    │ Data ready!     │   │ Data ready!     │           │ 2. Attach to VM │
+    └─────────────────┘   └─────────────────┘           │ 3. rsync to LSSD│
+                                                        │ 4. Delete temp  │
+                                                        │ (~20-30 min)    │
+                                                        └─────────────────┘
 ```
 
 **Benefits:**
-- Download once, extract many times
-- Parallel extraction on all VMs
-- No per-VM download = faster provisioning
-- Easy to add new VMs
+- Fast provisioning: ~15 min for persistent disks (vs ~6 hours for tar extraction)
+- No download phase: snapshot lives in GCP, no GCS transfer
+- Parallel: all VMs can provision simultaneously
+- Easy to update: create new snapshot from any synced VM
 
 ## VM Storage Types
 
@@ -181,7 +173,7 @@ Subsections use:
 - GCP resources: `op-reth-*` prefix
 - Service accounts: `op-reth-benchmark@<project>.iam.gserviceaccount.com`
 - GCS paths: `gs://<bucket>/builds/`, `gs://<bucket>/terraform/`
-- Download disk: `op-reth-snapshot-download`
+- Golden snapshots: `op-reth-golden-YYYY-MM-DD-HH-MM`
 
 ## Error Handling
 
@@ -270,11 +262,13 @@ This allows the downloader VM to generate signed URLs for GCS objects during sna
 
 7. **LSSD machine types** - Machines with `-lssd` suffix (e.g., `c3-standard-176-lssd`) have built-in NVMe SSDs. Storage is auto-configured as RAID-0. Do NOT specify `storage_type` or `disk_size_gb` for these machines.
 
-8. **Shared download disk** - The download disk is created once and shared read-only across all VMs. Download once, extract many times. VMs mount it at `/mnt/download`.
+8. **Golden snapshot required** - VMs are provisioned from a golden snapshot. Provisioning will fail if no valid snapshot is configured in `config.toml` `[snapshot]` section.
 
 9. **Data disk protection** - Data disks have `prevent_destroy = true` in Terraform to prevent accidental deletion. To delete, you must modify the Terraform code.
 
 10. **Hyperdisk provisioning** - Hyperdisk types require explicit `provisioned_iops` and `provisioned_throughput` settings.
+
+11. **LSSD rsync** - LSSD machines can't create disks from snapshot directly (ephemeral NVMe). Cloud Build creates a temp disk from snapshot, attaches it, rsyncs data to LSSD RAID, then deletes the temp disk.
 
 11. **PromQL label matching** - When combining metrics from different sources (e.g., `op_node_*` and `reth_*`), use `on(vm_name)` modifier for arithmetic operations. Labels must match explicitly or PromQL returns no data.
     ```promql
@@ -382,10 +376,9 @@ See `docs/ETA-CALC.md` for comprehensive guide on:
 │   ├── outputs.tf           # Outputs
 │   └── modules/
 │       ├── apis/            # GCP API enablement
-│       ├── benchmark/       # VM + data disk + download disk attachment
+│       ├── benchmark/       # VM + data disk (from snapshot)
 │       ├── bne/             # Blockchain Node Engine (L1)
 │       ├── cloudbuild-pool/ # Cloud Build private pool for SSH
-│       ├── download-disk/   # Shared download disk (NEW)
 │       ├── iam/             # Service accounts + IAM bindings
 │       └── monitoring/      # Cloud Monitoring dashboard + Telemetry API
 ├── ansible/
@@ -399,13 +392,10 @@ See `docs/ETA-CALC.md` for comprehensive guide on:
 │       ├── ops_agent/       # GCP Ops Agent for metrics + OTLP traces
 │       ├── op_reth/         # op-reth binary + systemd service
 │       ├── op_node/         # op-node binary + systemd service
-│       ├── snapshot_extract/  # Extract from shared download disk (NEW)
-│       └── snapshot_download/ # Legacy - download per-VM (deprecated)
+│       └── lssd_copy/       # rsync from temp disk to LSSD RAID
 └── cloudbuild/              # Cloud Build configs
     ├── build-op-reth.yaml   # Build op-reth binary from source
     ├── build-op-node.yaml   # Build op-node binary (extract from Docker)
-    ├── create-download-disk.yaml  # Create shared download disk (NEW)
-    ├── download.yaml        # Download snapshot to shared disk (NEW)
     ├── provision.yaml       # Terraform apply (create VMs)
     ├── configure.yaml       # Ansible playbook (configure VMs)
     ├── run-benchmark.yaml   # Run benchmark

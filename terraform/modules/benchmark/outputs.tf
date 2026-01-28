@@ -47,7 +47,7 @@ output "confidential_compute" {
   value       = var.confidential_compute
 }
 
-output "download_disk_attached" {
-  description = "Whether the download disk is attached"
-  value       = local.attach_download_disk
+output "is_lssd_machine" {
+  description = "Whether this is an LSSD machine (requires rsync for data)"
+  value       = local.is_lssd_machine
 }

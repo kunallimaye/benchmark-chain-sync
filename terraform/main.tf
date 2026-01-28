@@ -67,34 +67,6 @@ locals {
 }
 
 # =============================================================================
-# Download Disk (Shared Snapshot Storage)
-# =============================================================================
-# Created once, shared read-only across all benchmark VMs.
-# Download snapshot once, extract many times.
-# =============================================================================
-
-module "download_disk" {
-  source = "./modules/download-disk"
-  count  = var.create_download_disk ? 1 : 0
-
-  name         = var.download_disk_name
-  project_id   = var.project_id
-  zone         = var.zone
-  disk_size_gb = var.download_disk_size_gb
-  disk_type    = var.download_disk_type
-  labels       = local.benchmark_labels
-
-  depends_on = [module.apis]
-}
-
-# Resolve download disk self_link - either from module or from variable
-locals {
-  download_disk_self_link = var.create_download_disk ? (
-    length(module.download_disk) > 0 ? module.download_disk[0].disk_self_link : null
-  ) : var.download_disk_self_link
-}
-
-# =============================================================================
 # Benchmark Infrastructure
 # =============================================================================
 # Created when create_l1 = false and instances is not empty.
@@ -133,9 +105,9 @@ module "benchmark" {
   provisioned_iops       = each.value.provisioned_iops
   provisioned_throughput = each.value.provisioned_throughput
 
-  # Download disk (shared, read-only)
-  download_disk_self_link = local.download_disk_self_link
-  download_mount_point    = local.download_mount_point
+  # Golden snapshot for fast provisioning (persistent disks only)
+  snapshot_name         = var.snapshot_name
+  snapshot_disk_size_gb = var.snapshot_disk_size_gb
 
   service_account_email = module.iam[0].service_account_email
   confidential_compute  = each.value.confidential_compute
@@ -180,8 +152,8 @@ resource "local_file" "ansible_inventory" {
           # Performance tuning
           engine_cache_mb = var.instances[k].engine_cache_mb
           engine_workers  = var.instances[k].engine_workers
-          # Download disk (shared)
-          download_disk_attached = v.download_disk_attached
+          # LSSD machines need rsync from temp disk
+          is_lssd_machine = v.is_lssd_machine
         }
       }
       vars = {
@@ -191,7 +163,6 @@ resource "local_file" "ansible_inventory" {
         gcs_bucket           = var.gcs_bucket
         network              = var.network
         mount_point          = local.mount_point
-        download_mount_point = local.download_mount_point
         service_user         = "reth"
         service_group        = "reth"
         tracing_enabled      = var.tracing_enabled

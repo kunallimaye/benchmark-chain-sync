@@ -2,7 +2,8 @@
 # Configure Instances (Ansible Only)
 # =============================================================================
 # Downloads inventory from GCS and runs Ansible playbook to configure VMs.
-# Supports configuring single instance, multiple instances, or all.
+# For LSSD machines: creates a temp disk from snapshot, attaches it, runs
+# Ansible (which rsyncs data to LSSD), then detaches and deletes temp disk.
 #
 # Prerequisites: VMs must be provisioned (run: make provision)
 #
@@ -20,6 +21,60 @@
 
 steps:
   # ---------------------------------------------------------------------------
+  # Parse config to get snapshot and LSSD machine info
+  # ---------------------------------------------------------------------------
+  - id: 'parse-config'
+    name: 'python:3.12-slim'
+    entrypoint: 'python3'
+    args:
+      - '-c'
+      - |
+        import tomllib
+        import json
+
+        with open('config.toml', 'rb') as f:
+            config = tomllib.load(f)
+
+        snapshot = config.get('snapshot', {})
+        project = config.get('project', {})
+        defaults = config.get('defaults', {}).get('vm', {})
+        vms = config.get('vm', [])
+
+        # Merge defaults into each VM
+        for vm in vms:
+            machine_type = vm.get('machine_type', defaults.get('machine_type', ''))
+            for key, value in defaults.items():
+                if key not in vm:
+                    if machine_type.endswith('-lssd') and key in ('storage_type', 'disk_size_gb'):
+                        continue
+                    vm[key] = value
+
+        # Filter to specific VM if _VM is set
+        vm_filter = '${_VM}'
+        if vm_filter:
+            vms = [vm for vm in vms if vm.get('name') == vm_filter]
+
+        # Find LSSD machines that need temp disk
+        lssd_vms = [vm for vm in vms if vm.get('machine_type', '').endswith('-lssd')]
+        
+        print(f"Snapshot: {snapshot.get('name')}")
+        print(f"Project: {project.get('project_id')}")
+        print(f"Zone: {project.get('zone')}")
+        print(f"LSSD VMs that need temp disk: {[vm.get('name') for vm in lssd_vms]}")
+
+        # Write config for subsequent steps
+        with open('/workspace/snapshot_name.txt', 'w') as f:
+            f.write(snapshot.get('name', ''))
+        with open('/workspace/snapshot_disk_size_gb.txt', 'w') as f:
+            f.write(str(snapshot.get('disk_size_gb', 12000)))
+        with open('/workspace/project_id.txt', 'w') as f:
+            f.write(project.get('project_id', ''))
+        with open('/workspace/zone.txt', 'w') as f:
+            f.write(project.get('zone', ''))
+        with open('/workspace/lssd_vms.json', 'w') as f:
+            json.dump([vm.get('name') for vm in lssd_vms], f)
+
+  # ---------------------------------------------------------------------------
   # Download inventory from GCS
   # ---------------------------------------------------------------------------
   - id: 'download-inventory'
@@ -35,6 +90,79 @@ steps:
         
         echo "Inventory contents:"
         cat ansible/inventory/hosts.yml
+
+  # ---------------------------------------------------------------------------
+  # Create and attach temp disks for LSSD machines
+  # ---------------------------------------------------------------------------
+  - id: 'create-lssd-temp-disks'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+        
+        PROJECT_ID=$$(cat /workspace/project_id.txt)
+        ZONE=$$(cat /workspace/zone.txt)
+        SNAPSHOT_NAME=$$(cat /workspace/snapshot_name.txt)
+        SNAPSHOT_DISK_SIZE=$$(cat /workspace/snapshot_disk_size_gb.txt)
+        LSSD_VMS=$$(cat /workspace/lssd_vms.json)
+        
+        echo "=== Creating temp disks for LSSD machines ==="
+        echo "Snapshot: $$SNAPSHOT_NAME"
+        echo "LSSD VMs: $$LSSD_VMS"
+        
+        # Parse JSON array using python
+        python3 -c "
+        import json
+        import subprocess
+        import sys
+
+        lssd_vms = json.loads('$$LSSD_VMS')
+        
+        for vm_name in lssd_vms:
+            temp_disk_name = f'{vm_name}-snapshot-temp'
+            print(f'Creating temp disk: {temp_disk_name}')
+            
+            # Check if disk already exists
+            result = subprocess.run([
+                'gcloud', 'compute', 'disks', 'describe', temp_disk_name,
+                '--zone=$$ZONE', '--project=$$PROJECT_ID'
+            ], capture_output=True)
+            
+            if result.returncode == 0:
+                print(f'  Temp disk already exists, skipping creation')
+            else:
+                # Create disk from snapshot
+                subprocess.run([
+                    'gcloud', 'compute', 'disks', 'create', temp_disk_name,
+                    '--source-snapshot=$$SNAPSHOT_NAME',
+                    '--type=pd-balanced',
+                    '--size=$${SNAPSHOT_DISK_SIZE}GB',
+                    '--zone=$$ZONE',
+                    '--project=$$PROJECT_ID'
+                ], check=True)
+                print(f'  Created temp disk: {temp_disk_name}')
+            
+            # Attach disk to VM
+            print(f'Attaching temp disk to {vm_name}')
+            result = subprocess.run([
+                'gcloud', 'compute', 'instances', 'attach-disk', vm_name,
+                '--disk=' + temp_disk_name,
+                '--device-name=snapshot-disk',
+                '--mode=ro',
+                '--zone=$$ZONE',
+                '--project=$$PROJECT_ID'
+            ], capture_output=True)
+            
+            if result.returncode == 0:
+                print(f'  Attached temp disk to {vm_name}')
+            else:
+                # May already be attached
+                print(f'  Note: {result.stderr.decode()}')
+        
+        print('Done creating and attaching temp disks')
+        "
 
   # ---------------------------------------------------------------------------
   # Setup SSH keys via gcloud for OS Login
@@ -119,6 +247,55 @@ steps:
         echo ""
         echo "=== Configuration Complete ==="
 
+  # ---------------------------------------------------------------------------
+  # Detach and delete temp disks for LSSD machines
+  # ---------------------------------------------------------------------------
+  - id: 'cleanup-lssd-temp-disks'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+        
+        PROJECT_ID=$$(cat /workspace/project_id.txt)
+        ZONE=$$(cat /workspace/zone.txt)
+        LSSD_VMS=$$(cat /workspace/lssd_vms.json)
+        
+        echo "=== Cleaning up temp disks for LSSD machines ==="
+        
+        python3 -c "
+        import json
+        import subprocess
+
+        lssd_vms = json.loads('$$LSSD_VMS')
+        
+        for vm_name in lssd_vms:
+            temp_disk_name = f'{vm_name}-snapshot-temp'
+            
+            # Detach disk from VM
+            print(f'Detaching temp disk from {vm_name}')
+            subprocess.run([
+                'gcloud', 'compute', 'instances', 'detach-disk', vm_name,
+                '--disk=' + temp_disk_name,
+                '--zone=$$ZONE',
+                '--project=$$PROJECT_ID'
+            ], capture_output=True)
+            
+            # Delete temp disk
+            print(f'Deleting temp disk: {temp_disk_name}')
+            subprocess.run([
+                'gcloud', 'compute', 'disks', 'delete', temp_disk_name,
+                '--zone=$$ZONE',
+                '--project=$$PROJECT_ID',
+                '--quiet'
+            ], capture_output=True)
+            
+            print(f'  Cleaned up {temp_disk_name}')
+        
+        print('Done cleaning up temp disks')
+        "
+
 substitutions:
   _VM: ''
   _FORKS: '10'
@@ -132,4 +309,4 @@ options:
 
 tags: ['configure']
 
-timeout: '1800s'  # 30 minutes (snapshot downloads in background on VM)
+timeout: '7200s'  # 2 hours (LSSD rsync can take 30-60 min)

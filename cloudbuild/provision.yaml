@@ -6,7 +6,7 @@
 #
 # Prerequisites:
 #   - L1 infrastructure must exist (run: make create-l1)
-#   - Download disk should exist (run: make create-download-disk)
+#   - Golden snapshot must exist (run: make create-snapshot)
 #
 # Usage:
 #   gcloud builds submit . \
@@ -36,7 +36,7 @@ steps:
         # Get defaults for VM and tracing config
         defaults = config.get('defaults', {}).get('vm', {})
         tracing = config.get('tracing', {})
-        download = config.get('download', {})
+        snapshot = config.get('snapshot', {})
 
         # Merge defaults into each VM
         vms = config.get('vm', [])
@@ -63,7 +63,13 @@ steps:
         # Update config with merged VMs and ensure tracing config exists
         config['vm'] = vms
         config['tracing'] = tracing
-        config['download'] = download
+        config['snapshot'] = snapshot
+
+        # Validate snapshot config
+        if not snapshot.get('name'):
+            print("ERROR: [snapshot] name is required in config.toml", file=sys.stderr)
+            print("Create a golden snapshot first: make create-snapshot VM=<vm-name>", file=sys.stderr)
+            sys.exit(1)
 
         # Write merged config
         with open('/workspace/config.json', 'w') as f:
@@ -71,7 +77,7 @@ steps:
 
         print("=== Parsed config.toml ===")
         print(f"Project: {config.get('project', {}).get('project_id')}")
-        print(f"Download disk: {download.get('disk_name', 'not configured')}")
+        print(f"Golden snapshot: {snapshot.get('name')}")
         print(f"VMs to provision: {[vm.get('name') for vm in vms]}")
         print("")
         for vm in vms:
@@ -95,13 +101,15 @@ steps:
             f.write(config.get('project', {}).get('project_id', ''))
         with open('/workspace/zone.txt', 'w') as f:
             f.write(config.get('project', {}).get('zone', ''))
-        with open('/workspace/disk_name.txt', 'w') as f:
-            f.write(download.get('disk_name', 'op-reth-snapshot-download'))
+        with open('/workspace/snapshot_name.txt', 'w') as f:
+            f.write(snapshot.get('name', ''))
+        with open('/workspace/snapshot_disk_size_gb.txt', 'w') as f:
+            f.write(str(snapshot.get('disk_size_gb', 12000)))
 
   # ---------------------------------------------------------------------------
-  # Get download disk self_link
+  # Verify golden snapshot exists
   # ---------------------------------------------------------------------------
-  - id: 'get-download-disk'
+  - id: 'verify-snapshot'
     name: 'gcr.io/cloud-builders/gcloud'
     entrypoint: 'bash'
     args:
@@ -110,19 +118,21 @@ steps:
         set -e
         
         PROJECT_ID=$$(cat /workspace/project_id.txt)
-        ZONE=$$(cat /workspace/zone.txt)
-        DISK_NAME=$$(cat /workspace/disk_name.txt)
+        SNAPSHOT_NAME=$$(cat /workspace/snapshot_name.txt)
         
-        echo "Looking for download disk: $$DISK_NAME"
+        echo "Verifying golden snapshot: $$SNAPSHOT_NAME"
         
-        if gcloud compute disks describe "$$DISK_NAME" --zone="$$ZONE" --project="$$PROJECT_ID" &>/dev/null; then
-          SELF_LINK=$$(gcloud compute disks describe "$$DISK_NAME" --zone="$$ZONE" --project="$$PROJECT_ID" --format="value(selfLink)")
-          echo "Found download disk: $$SELF_LINK"
-          echo "$$SELF_LINK" > /workspace/download_disk_self_link.txt
+        if gcloud compute snapshots describe "$$SNAPSHOT_NAME" --project="$$PROJECT_ID" &>/dev/null; then
+          STATUS=$$(gcloud compute snapshots describe "$$SNAPSHOT_NAME" --project="$$PROJECT_ID" --format="value(status)")
+          echo "Snapshot found, status: $$STATUS"
+          if [ "$$STATUS" != "READY" ]; then
+            echo "ERROR: Snapshot is not ready (status: $$STATUS)"
+            exit 1
+          fi
         else
-          echo "WARNING: Download disk not found. VMs will be created without download disk attached."
-          echo "Run 'make create-download-disk' to create it."
-          echo "" > /workspace/download_disk_self_link.txt
+          echo "ERROR: Golden snapshot '$$SNAPSHOT_NAME' not found."
+          echo "Create one first: make create-snapshot VM=<vm-name>"
+          exit 1
         fi
 
   # ---------------------------------------------------------------------------
@@ -139,11 +149,14 @@ steps:
         with open('/workspace/config.json', 'r') as f:
             config = json.load(f)
 
-        # Read download disk self_link
-        download_disk_self_link = None
+        # Read snapshot config
+        snapshot_name = ''
+        snapshot_disk_size_gb = 12000
         try:
-            with open('/workspace/download_disk_self_link.txt', 'r') as f:
-                download_disk_self_link = f.read().strip() or None
+            with open('/workspace/snapshot_name.txt', 'r') as f:
+                snapshot_name = f.read().strip()
+            with open('/workspace/snapshot_disk_size_gb.txt', 'r') as f:
+                snapshot_disk_size_gb = int(f.read().strip())
         except:
             pass
 
@@ -151,7 +164,7 @@ steps:
         l1 = config.get('l1', {})
         vms = config.get('vm', [])
         tracing = config.get('tracing', {})
-        download = config.get('download', {})
+        snapshot = config.get('snapshot', {})
 
         # Convert VMs list to map keyed by name
         instances = {}
@@ -187,8 +200,8 @@ steps:
             'l1_beacon_endpoint': l1.get('beacon_endpoint'),
             'l1_api_key': '${_L1_API_KEY}',
             'create_l1': False,
-            'create_download_disk': False,  # Don't create, just reference
-            'download_disk_self_link': download_disk_self_link,
+            'snapshot_name': snapshot_name,
+            'snapshot_disk_size_gb': snapshot_disk_size_gb,
             'instances': instances,
             'tracing_enabled': tracing.get('enabled', True),
             'tracing_sample_ratio': tracing.get('sample_ratio', 0.01),

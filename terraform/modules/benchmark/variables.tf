@@ -97,15 +97,14 @@ variable "mount_point" {
   description = "Mount point for the data disk"
 }
 
-variable "download_mount_point" {
+variable "snapshot_name" {
   type        = string
-  default     = "/mnt/download"
-  description = "Mount point for the download disk"
+  default     = ""
+  description = "Name of GCP snapshot to create disk from (empty = create blank disk, which will fail without data)"
 }
 
-variable "download_disk_self_link" {
-  type        = string
-  default     = null
-  nullable    = true
-  description = "Self link of the shared download disk to attach read-only"
+variable "snapshot_disk_size_gb" {
+  type        = number
+  default     = 12000
+  description = "Size of disk created from snapshot (in GB)"
 }

@@ -26,25 +26,21 @@ locals {
   # Storage type for labels (handle null case)
   storage_type_label = local.is_lssd_machine ? "lssd" : coalesce(var.storage_type, "none")
 
-  # Whether to attach download disk
-  attach_download_disk = var.download_disk_self_link != null
+  # Snapshot self-link for creating disk from snapshot
+  snapshot_self_link = var.snapshot_name != "" ? "projects/${var.project_id}/global/snapshots/${var.snapshot_name}" : null
 
   startup_script = <<-EOF
     #!/bin/bash
     set -euo pipefail
     
     MOUNT_POINT="${var.mount_point}"
-    DOWNLOAD_MOUNT_POINT="${var.download_mount_point}"
     MACHINE_TYPE="${var.machine_type}"
     STORAGE_TYPE="${coalesce(var.storage_type, "lssd")}"
-    ATTACH_DOWNLOAD_DISK="${local.attach_download_disk}"
     
     echo "=== Disk Setup Script ==="
     echo "Machine type: $MACHINE_TYPE"
     echo "Storage type: $STORAGE_TYPE"
     echo "Data mount point: $MOUNT_POINT"
-    echo "Download mount point: $DOWNLOAD_MOUNT_POINT"
-    echo "Attach download disk: $ATTACH_DOWNLOAD_DISK"
     
     # =========================================================================
     # Mount Data Disk
@@ -98,7 +94,7 @@ locals {
                 sleep 2
             fi
             
-            # Format if needed
+            # Format if needed (LSSD always needs formatting - data comes via rsync)
             if ! blkid "$DEVICE" &>/dev/null; then
                 echo "Formatting $DEVICE with XFS..."
                 mkfs.xfs -f "$DEVICE"
@@ -112,7 +108,7 @@ locals {
             df -h "$MOUNT_POINT"
             
         else
-            # Persistent disk (pd-* or hyperdisk-*)
+            # Persistent disk (pd-* or hyperdisk-*) - created from snapshot
             DEVICE="/dev/disk/by-id/google-data-disk"
             
             echo "Waiting for device $DEVICE..."
@@ -136,10 +132,13 @@ locals {
             REAL_DEVICE=$(readlink -f "$DEVICE")
             echo "Resolved device: $DEVICE -> $REAL_DEVICE"
             
-            # Check if already formatted
-            if ! blkid "$DEVICE" &>/dev/null; then
-                echo "Formatting $DEVICE with XFS..."
-                mkfs.xfs -f "$DEVICE"
+            # Check if already formatted (disk from snapshot should already have filesystem)
+            if blkid "$DEVICE" &>/dev/null; then
+                echo "Disk already has filesystem (created from snapshot)"
+            else
+                echo "ERROR: Disk has no filesystem - was it created from a snapshot?"
+                echo "Disks must be created from golden snapshot, not blank."
+                exit 1
             fi
             
             # Create mount point
@@ -159,47 +158,13 @@ locals {
             
             echo "Persistent disk mounted at $MOUNT_POINT"
             df -h "$MOUNT_POINT"
-        fi
-    fi
-    
-    # =========================================================================
-    # Mount Download Disk (read-only, shared)
-    # =========================================================================
-    
-    if [ "$ATTACH_DOWNLOAD_DISK" = "true" ]; then
-        if mount | grep -q "$DOWNLOAD_MOUNT_POINT"; then
-            echo "Download disk already mounted at $DOWNLOAD_MOUNT_POINT"
-        else
-            DOWNLOAD_DEVICE="/dev/disk/by-id/google-download-disk"
             
-            echo "Waiting for download device $DOWNLOAD_DEVICE..."
-            for i in $(seq 1 30); do
-                if [[ -e "$DOWNLOAD_DEVICE" ]]; then
-                    echo "Download device found!"
-                    break
-                fi
-                echo "  Attempt $i/30..."
-                sleep 2
-            done
-            
-            if [[ -e "$DOWNLOAD_DEVICE" ]]; then
-                mkdir -p "$DOWNLOAD_MOUNT_POINT"
-                
-                # Mount read-only
-                mount -o ro "$DOWNLOAD_DEVICE" "$DOWNLOAD_MOUNT_POINT"
-                
-                echo "Download disk mounted read-only at $DOWNLOAD_MOUNT_POINT"
-                df -h "$DOWNLOAD_MOUNT_POINT"
-                
-                # Show snapshot file if exists
-                if [ -f "$DOWNLOAD_MOUNT_POINT/snapshot.tar.zst" ]; then
-                    echo "Snapshot file found: $(ls -lh $DOWNLOAD_MOUNT_POINT/snapshot.tar.zst)"
-                else
-                    echo "WARNING: No snapshot.tar.zst found on download disk"
-                fi
+            # Verify data exists (from snapshot)
+            if [ -d "$MOUNT_POINT/op-reth/db" ]; then
+                echo "Database directory found - snapshot data present"
             else
-                echo "WARNING: Download device not found after 60 seconds"
-                echo "This is expected if download hasn't been run yet"
+                echo "WARNING: No database found at $MOUNT_POINT/op-reth/db"
+                echo "This may indicate the snapshot was not properly restored"
             fi
         fi
     fi
@@ -210,14 +175,18 @@ locals {
 
 # -----------------------------------------------------------------------------
 # Persistent Disk (only for non-LSSD storage types)
+# Created from golden snapshot for fast provisioning
 # -----------------------------------------------------------------------------
 resource "google_compute_disk" "data" {
   count   = local.create_persistent_disk ? 1 : 0
   name    = "${var.name}-data"
   type    = var.storage_type
   zone    = var.zone
-  size    = var.disk_size_gb
+  size    = var.snapshot_disk_size_gb  # Use snapshot disk size, not default
   project = var.project_id
+
+  # Create from golden snapshot (required for fast provisioning)
+  snapshot = local.snapshot_self_link
 
   # Hyperdisk-specific settings (ignored for pd-* types)
   # Note: hyperdisk-extreme only supports IOPS, not throughput
@@ -229,7 +198,7 @@ resource "google_compute_disk" "data" {
   lifecycle {
     # SAFETY: Prevent accidental deletion of data disk
     # This disk contains synced blockchain data which takes days to rebuild.
-    # To delete, you must first remove this lifecycle rule.
+    # To delete, you must first remove this lifecycle rule or remove from state.
     prevent_destroy = true
   }
 }
@@ -268,23 +237,13 @@ resource "google_compute_instance" "vm" {
     }
   }
 
-  # Attach data disk (only for non-LSSD)
+  # Attach data disk (only for non-LSSD - created from snapshot)
   dynamic "attached_disk" {
     for_each = local.create_persistent_disk ? [1] : []
     content {
       source      = google_compute_disk.data[0].self_link
       device_name = "data-disk"
       mode        = "READ_WRITE"
-    }
-  }
-
-  # Attach download disk (read-only, shared across VMs)
-  dynamic "attached_disk" {
-    for_each = local.attach_download_disk ? [1] : []
-    content {
-      source      = var.download_disk_self_link
-      device_name = "download-disk"
-      mode        = "READ_ONLY"
     }
   }
 

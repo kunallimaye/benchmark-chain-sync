@@ -66,36 +66,18 @@ variable "l1_api_key" {
 }
 
 # -----------------------------------------------------------------------------
-# Download Disk Configuration
+# Golden Snapshot Configuration
 # -----------------------------------------------------------------------------
-variable "create_download_disk" {
-  type        = bool
-  default     = false
-  description = "Whether to create the shared download disk"
-}
-
-variable "download_disk_name" {
+variable "snapshot_name" {
   type        = string
-  default     = "op-reth-snapshot-download"
-  description = "Name of the shared download disk"
+  default     = ""
+  description = "Name of GCP snapshot to create data disks from. Required for provisioning."
 }
 
-variable "download_disk_size_gb" {
+variable "snapshot_disk_size_gb" {
   type        = number
-  default     = 8000
-  description = "Size of the download disk in GB"
-}
-
-variable "download_disk_type" {
-  type        = string
-  default     = "pd-balanced"
-  description = "Type of the download disk"
-}
-
-variable "download_disk_self_link" {
-  type        = string
-  default     = null
-  description = "Self link of existing download disk to attach (when not creating)"
+  default     = 12000
+  description = "Size of data disks created from snapshot (in GB). Should be >= snapshot source disk actual data size."
 }
 
 # -----------------------------------------------------------------------------
@@ -176,8 +158,7 @@ variable "tracing_filter" {
 # -----------------------------------------------------------------------------
 locals {
   # Mount points
-  mount_point          = "/mnt/data"
-  download_mount_point = "/mnt/download"
+  mount_point = "/mnt/data"
 
   # Build artifact path
   build_artifact_path = "gs://${var.gcs_bucket}/builds"

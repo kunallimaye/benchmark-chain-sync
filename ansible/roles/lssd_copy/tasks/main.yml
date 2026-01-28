@@ -1,0 +1,119 @@
+---
+# =============================================================================
+# LSSD Copy Role - Copy data from temp snapshot disk to LSSD RAID
+# =============================================================================
+# This role is only executed on LSSD machines where we can't create a disk
+# directly from snapshot. Instead, we:
+# 1. Mount a temp pd-balanced disk created from the golden snapshot
+# 2. rsync the data to the LSSD RAID-0 array
+# 3. The temp disk is deleted by Cloud Build after Ansible completes
+# =============================================================================
+
+- name: Check if data already exists on LSSD
+  stat:
+    path: "{{ mount_point }}/op-reth/db/mdbx.dat"
+  register: lssd_db_exists
+
+- name: Skip copy if data already exists
+  debug:
+    msg: "Database already exists on LSSD - skipping copy"
+  when: lssd_db_exists.stat.exists
+
+- name: Copy data from snapshot disk to LSSD
+  when: not lssd_db_exists.stat.exists
+  block:
+    - name: Wait for snapshot disk device
+      wait_for:
+        path: "{{ snapshot_disk_device }}"
+        timeout: 120
+      register: snapshot_disk_wait
+
+    - name: Create snapshot mount point
+      file:
+        path: "{{ snapshot_mount_point }}"
+        state: directory
+        mode: '0755'
+
+    - name: Mount snapshot disk read-only
+      mount:
+        path: "{{ snapshot_mount_point }}"
+        src: "{{ snapshot_disk_device }}"
+        fstype: xfs
+        opts: ro
+        state: mounted
+
+    - name: Verify snapshot data exists
+      stat:
+        path: "{{ snapshot_mount_point }}/op-reth/db/mdbx.dat"
+      register: snapshot_db_exists
+
+    - name: Fail if snapshot data not found
+      fail:
+        msg: "ERROR: Database not found on snapshot disk at {{ snapshot_mount_point }}/op-reth/db/mdbx.dat"
+      when: not snapshot_db_exists.stat.exists
+
+    - name: Get snapshot disk usage
+      command: du -sh {{ snapshot_mount_point }}
+      register: snapshot_usage
+      changed_when: false
+
+    - name: Display copy information
+      debug:
+        msg: |
+          ============================================================
+          LSSD DATA COPY
+          ============================================================
+          Source: {{ snapshot_mount_point }} ({{ snapshot_usage.stdout.split()[0] }})
+          Destination: {{ mount_point }}
+          
+          This will take approximately 15-30 minutes depending on data size.
+          ============================================================
+
+    - name: Copy data from snapshot to LSSD using rsync
+      command: >
+        rsync {{ rsync_options }}
+        {{ snapshot_mount_point }}/
+        {{ mount_point }}/
+      register: rsync_result
+      # rsync can take a long time - allow up to 2 hours
+      async: 7200
+      poll: 30
+
+    - name: Display rsync result
+      debug:
+        msg: "rsync completed successfully"
+
+    - name: Unmount snapshot disk
+      mount:
+        path: "{{ snapshot_mount_point }}"
+        state: unmounted
+
+    - name: Remove snapshot mount point
+      file:
+        path: "{{ snapshot_mount_point }}"
+        state: absent
+
+    - name: Set correct ownership on copied data
+      file:
+        path: "{{ mount_point }}"
+        owner: "{{ service_user }}"
+        group: "{{ service_group }}"
+        recurse: yes
+      # This can take a while for large directories
+      async: 1800
+      poll: 30
+
+- name: Verify data on LSSD
+  stat:
+    path: "{{ mount_point }}/op-reth/db/mdbx.dat"
+  register: final_db_check
+
+- name: Display final status
+  debug:
+    msg: |
+      ============================================================
+      LSSD COPY COMPLETE
+      ============================================================
+      Database exists: {{ final_db_check.stat.exists }}
+      Location: {{ mount_point }}/op-reth/db/
+      ============================================================

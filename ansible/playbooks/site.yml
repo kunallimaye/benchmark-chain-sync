@@ -5,9 +5,10 @@
 # Configures the benchmark VM with all required components:
 # - Common packages and user setup
 # - GCP Ops Agent for metrics
-# - Install op-reth and op-node (binaries + systemd units, NOT started)
-# - Extract snapshot from shared download disk
-# - On extraction completion, start op-reth and op-node services
+# - Install op-reth and op-node (binaries + systemd units)
+# - For LSSD machines: copy data from temp snapshot disk via rsync
+# - For persistent disks: data is already present (created from snapshot)
+# - Start op-reth and op-node services
 # =============================================================================
 
 - name: Setup benchmark VM
@@ -26,6 +27,11 @@
       shell: while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 5; done
       changed_when: false
 
+    - name: Check if database already exists
+      stat:
+        path: "{{ mount_point }}/op-reth/db/mdbx.dat"
+      register: reth_db_exists
+
   roles:
     - common
     - ops_agent
@@ -35,9 +41,24 @@
     - role: op_node
       vars:
         start_services: false
-    - snapshot_extract
+    # LSSD machines need to copy data from temp snapshot disk
+    - role: lssd_copy
+      when: is_lssd_machine | default(false)
 
   post_tasks:
+    - name: Start op-reth service
+      systemd:
+        name: op-reth
+        state: started
+        enabled: yes
+        daemon_reload: yes
+
+    - name: Start op-node service
+      systemd:
+        name: op-node
+        state: started
+        enabled: yes
+
     - name: Display configuration summary
       debug:
         msg: |
@@ -48,17 +69,16 @@
           VM: {{ vm_name }}
           Machine type: {{ machine_type }}
           Storage type: {{ storage_type }}
+          LSSD machine: {{ is_lssd_machine | default(false) }}
           Confidential compute (TDX): {{ confidential_compute | default(true) }}
           
-          {% if reth_db_exists.stat.exists | default(false) %}
-          Status: Data exists, services started
-          {% else %}
-          Status: Extraction started in background
+          Services started:
+            - op-reth: running
+            - op-node: running
           
-          Monitor progress:
-            make extract-status VM={{ vm_name }}
+          Data location: {{ mount_point }}/op-reth/
           
-          When the extraction completes, op-reth and op-node will start
-          automatically.
-          {% endif %}
+          Monitor sync progress:
+            curl -s http://localhost:9001/metrics | grep reth_sync_checkpoint
+          
           ============================================================
