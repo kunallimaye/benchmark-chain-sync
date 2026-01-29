@@ -16,7 +16,7 @@ start_services: true
 op_reth_sequencer_url: "{{ base_sequencer_urls[network] }}"
 
 # -----------------------------------------------------------------------------
-# Performance Tuning
+# Performance Tuning (CLI Flags)
 # -----------------------------------------------------------------------------
 # These settings optimize op-reth for faster sync and execution.
 # engine_cache_mb: Cross-block cache size in MB. Larger = more state in memory.
@@ -25,6 +25,23 @@ op_reth_sequencer_url: "{{ base_sequencer_urls[network] }}"
 engine_cache_mb: 4096            # Cross-block cache size in MB (Reth default)
 engine_workers: 0                # State root workers (0 = Reth auto-detect)
 engine_reserved_cores: 0         # CPU cores reserved for non-Reth processes
+
+# -----------------------------------------------------------------------------
+# reth.toml Configuration (Batch Size)
+# -----------------------------------------------------------------------------
+# Controls execution batch size for checkpoint frequency.
+# Smaller batches = more frequent checkpoint updates = better ETA visibility
+# Trade-off: ~10-15% slower total sync vs 500K default
+reth_batch_size: 10000           # Blocks per execution batch (default: 500000)
+reth_batch_duration: "1m"        # Max duration per batch (default: 10m)
+
+# -----------------------------------------------------------------------------
+# Database Configuration (MDBX)
+# -----------------------------------------------------------------------------
+# db_max_size_bytes: Maximum database size in bytes (0 = use default 8TB)
+# db_growth_step_bytes: Database growth increment in bytes (default 4GB)
+db_max_size_bytes: 0             # Set via config.toml (0 = use Reth default)
+db_growth_step_bytes: 4294967296 # 4GB
 
 # -----------------------------------------------------------------------------
 # Tracing Configuration (OpenTelemetry to Cloud Trace)

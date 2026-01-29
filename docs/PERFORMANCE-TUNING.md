@@ -713,24 +713,32 @@ echo "System tuning complete!"
 | `--engine.reserved-cpu-cores` | ✅ 0 | `op-reth.service.j2` |
 | Tracing (OTLP to Cloud Trace) | ✅ 1% sampling | `op-reth.service.j2` |
 | ulimits (LimitNOFILE) | ✅ 65535 | `op-reth.service.j2` |
+| `reth.toml` config file | ✅ 10K batch size | `op_reth` role, `reth.toml.j2` |
+| `--db.max-size` | ✅ Configurable | `op-reth.service.j2`, `config.toml [reth_config]` |
+| `--db.growth-step` | ✅ Configurable | `op-reth.service.j2`, `config.toml [reth_config]` |
+| Filesystem mount options | ✅ `noatime,nodiratime` | Terraform startup script, `system_tuning` role |
+| I/O scheduler | ✅ `none`/`mq-deadline` | `system_tuning` role |
+| sysctl tuning | ✅ MDBX-optimized | `system_tuning` role |
+| THP configuration | ✅ `madvise` | `system_tuning` role |
+| Block device tuning | ✅ `nr_requests`, `read_ahead_kb` | `system_tuning` role |
 
-### What's NOT Configured
+### Configuration Sources
 
-| Setting | Status | Impact | Priority |
-|---------|--------|--------|----------|
-| `reth.toml` config file | ❌ Not deployed | No batch size control | High |
-| `--db.max-size` | ❌ Default 8TB | May limit large DBs | Medium |
-| `--db.growth-step` | ❌ Default | Suboptimal for NVMe | Low |
-| Filesystem mount options | ❌ Not set | Missing `noatime` | High |
-| I/O scheduler | ❌ Default | May not be optimal | Medium |
-| sysctl tuning | ❌ Not set | Suboptimal VM settings | Medium |
-| THP configuration | ❌ Default | May cause memory bloat | Low |
+| Setting | Source | Notes |
+|---------|--------|-------|
+| Batch size | `config.toml [reth_config].batch_size` | Default: 10000 blocks |
+| Batch duration | `config.toml [reth_config].batch_duration` | Default: "1m" |
+| DB max size | `config.toml [reth_config].db_max_size_gb` | Default: 15000 (15TB) |
+| DB growth step | `config.toml [reth_config].db_growth_step_mb` | Default: 4096 (4GB) |
 
-### Implementation Priority
+### Ansible Roles
 
-1. **High:** Mount options (`noatime`), `reth.toml` for batch size
-2. **Medium:** sysctl tuning, I/O scheduler, `--db.max-size`
-3. **Low:** THP, block device tuning, `--db.growth-step`
+| Role | Purpose | Key Files |
+|------|---------|-----------|
+| `system_tuning` | Linux kernel/filesystem tuning | `99-mdbx-tuning.conf.j2`, `60-io-scheduler.rules.j2` |
+| `op_reth` | op-reth binary, service, config | `op-reth.service.j2`, `reth.toml.j2` |
+
+To apply tuning to a VM: `make configure VM=<name>`
 
 ---
 

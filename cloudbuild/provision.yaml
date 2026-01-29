@@ -33,10 +33,11 @@ steps:
         with open('config.toml', 'rb') as f:
             config = tomllib.load(f)
 
-        # Get defaults for VM and tracing config
+        # Get defaults for VM, tracing, and reth config
         defaults = config.get('defaults', {}).get('vm', {})
         tracing = config.get('tracing', {})
         snapshot = config.get('snapshot', {})
+        reth_config = config.get('reth_config', {})
 
         # Merge defaults into each VM
         vms = config.get('vm', [])
@@ -60,10 +61,11 @@ steps:
                 print(f"ERROR: VM '{vm_filter}' not found in config.toml", file=sys.stderr)
                 sys.exit(1)
 
-        # Update config with merged VMs and ensure tracing config exists
+        # Update config with merged VMs and ensure configs exist
         config['vm'] = vms
         config['tracing'] = tracing
         config['snapshot'] = snapshot
+        config['reth_config'] = reth_config
 
         # Validate snapshot config
         if not snapshot.get('name'):
@@ -165,6 +167,7 @@ steps:
         vms = config.get('vm', [])
         tracing = config.get('tracing', {})
         snapshot = config.get('snapshot', {})
+        reth_config = config.get('reth_config', {})
 
         # Convert VMs list to map keyed by name
         instances = {}
@@ -206,6 +209,11 @@ steps:
             'tracing_enabled': tracing.get('enabled', True),
             'tracing_sample_ratio': tracing.get('sample_ratio', 0.01),
             'tracing_filter': tracing.get('filter', 'info'),
+            # Reth configuration (for Ansible inventory)
+            'reth_batch_size': reth_config.get('batch_size', 10000),
+            'reth_batch_duration': reth_config.get('batch_duration', '1m'),
+            'db_max_size_gb': reth_config.get('db_max_size_gb', 15000),
+            'db_growth_step_mb': reth_config.get('db_growth_step_mb', 4096),
         }
 
         with open('/workspace/terraform.tfvars.json', 'w') as f:

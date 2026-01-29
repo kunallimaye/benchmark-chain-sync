@@ -168,6 +168,11 @@ resource "local_file" "ansible_inventory" {
         tracing_enabled      = var.tracing_enabled
         tracing_sample_ratio = var.tracing_sample_ratio
         tracing_filter       = var.tracing_filter
+        # Reth configuration
+        reth_batch_size      = var.reth_batch_size
+        reth_batch_duration  = var.reth_batch_duration
+        db_max_size_bytes    = var.db_max_size_gb * 1024 * 1024 * 1024
+        db_growth_step_bytes = var.db_growth_step_mb * 1024 * 1024
       }
     }
   })

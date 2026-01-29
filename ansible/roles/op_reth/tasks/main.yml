@@ -29,6 +29,15 @@
   debug:
     msg: "{{ op_reth_version.stdout }}"
 
+- name: Deploy reth.toml configuration
+  template:
+    src: reth.toml.j2
+    dest: "{{ op_reth_data_dir }}/reth.toml"
+    owner: "{{ service_user }}"
+    group: "{{ service_group }}"
+    mode: '0644'
+  notify: Restart op-reth
+
 - name: Deploy op-reth systemd service
   template:
     src: op-reth.service.j2

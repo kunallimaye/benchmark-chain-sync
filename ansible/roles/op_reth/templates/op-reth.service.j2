@@ -8,7 +8,11 @@ Type=simple
 User={{ service_user }}
 Group={{ service_group }}
 
+# Disable ANSI colors for clean log parsing (enables log-based metrics)
+Environment="NO_COLOR=1"
+
 ExecStart={{ op_reth_bin_path }} node \
+    --config {{ op_reth_data_dir }}/reth.toml \
     --chain {{ op_reth_chain }} \
     --datadir {{ op_reth_data_dir }} \
     --http \
@@ -23,6 +27,11 @@ ExecStart={{ op_reth_bin_path }} node \
     --authrpc.jwtsecret {{ jwt_secret_path }} \
     --metrics 0.0.0.0:{{ op_reth_metrics_port }} \
     --rollup.sequencer-http {{ op_reth_sequencer_url }} \
+{# NOTE: --db.max-size removed - causes MDBX_TOO_LARGE on smaller VMs #}
+{# MDBX auto-sizes based on actual database size, which is more reliable #}
+{% if db_growth_step_bytes | default(0) | int > 0 %}
+    --db.growth-step {{ db_growth_step_bytes }} \
+{% endif %}
 {% if engine_cache_mb | default(0) | int > 0 %}
     --engine.cross-block-cache-size {{ engine_cache_mb }} \
 {% endif %}

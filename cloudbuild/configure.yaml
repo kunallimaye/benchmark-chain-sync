@@ -309,4 +309,4 @@ options:
 
 tags: ['configure']
 
-timeout: '7200s'  # 2 hours (LSSD rsync can take 30-60 min)
+timeout: '21600s'  # 6 hours (large database operations can take time)

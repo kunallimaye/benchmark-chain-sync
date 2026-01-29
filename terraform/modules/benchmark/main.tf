@@ -100,11 +100,11 @@ locals {
                 mkfs.xfs -f "$DEVICE"
             fi
             
-            # Mount
+            # Mount with noatime for better performance
             mkdir -p "$MOUNT_POINT"
-            mount "$DEVICE" "$MOUNT_POINT"
+            mount -o noatime,nodiratime "$DEVICE" "$MOUNT_POINT"
             
-            echo "RAID-0 array mounted at $MOUNT_POINT"
+            echo "RAID-0 array mounted at $MOUNT_POINT with noatime"
             df -h "$MOUNT_POINT"
             
         else
@@ -148,9 +148,9 @@ locals {
             UUID=$(blkid -s UUID -o value "$DEVICE")
             echo "Disk UUID: $UUID"
             
-            # Add to fstab if not already present (with nofail for resilience)
+            # Add to fstab if not already present (with nofail for resilience, noatime for performance)
             if ! grep -q "$UUID" /etc/fstab; then
-                echo "UUID=$UUID $MOUNT_POINT xfs defaults,nofail 0 2" >> /etc/fstab
+                echo "UUID=$UUID $MOUNT_POINT xfs defaults,noatime,nodiratime,nofail 0 2" >> /etc/fstab
             fi
             
             # Mount

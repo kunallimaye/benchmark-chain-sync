@@ -58,9 +58,21 @@ make cleanup VM=<name>        # Destroy specific VM
 [build]             # Build settings (reth_repo, reth_branch, op_node_version)
 [tracing]           # OpenTelemetry tracing settings (Cloud Trace)
 [snapshot]          # Golden snapshot settings (name, disk_size_gb)
+[reth_config]       # Reth performance tuning (batch size, db settings)
 [defaults.vm]       # Default VM settings (inherited by [[vm]] sections)
 [[vm]]              # VM instance definitions (can have multiple)
 ```
+
+**`[reth_config]` section:**
+```toml
+[reth_config]
+batch_size = 10000              # Blocks per execution batch (default: 10000)
+batch_duration = "1m"           # Max duration per batch (default: "1m")
+db_max_size_gb = 15000          # Maximum database size in GB (default: 15000)
+db_growth_step_mb = 4096        # Database growth increment in MB (default: 4096)
+```
+
+Lower batch sizes give better ETA visibility but ~7-15% slower sync. See `docs/PERFORMANCE-TUNING.md`.
 
 ### .env (secrets, gitignored)
 ```bash
@@ -389,8 +401,9 @@ See `docs/ETA-CALC.md` for comprehensive guide on:
 │   │   └── install-*.yml
 │   └── roles/
 │       ├── common/          # Base packages, user setup, gcloud CLI
+│       ├── system_tuning/   # sysctl, I/O scheduler, THP, mount options
 │       ├── ops_agent/       # GCP Ops Agent for metrics + OTLP traces
-│       ├── op_reth/         # op-reth binary + systemd service
+│       ├── op_reth/         # op-reth binary + systemd service + reth.toml
 │       ├── op_node/         # op-node binary + systemd service
 │       └── lssd_copy/       # rsync from temp disk to LSSD RAID
 └── cloudbuild/              # Cloud Build configs

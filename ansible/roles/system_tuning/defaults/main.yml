@@ -1,0 +1,32 @@
+---
+# =============================================================================
+# System Tuning Defaults - MDBX/Blockchain Workloads
+# =============================================================================
+# These settings optimize Linux kernel parameters for database performance.
+# See docs/PERFORMANCE-TUNING.md for detailed explanations.
+
+# -----------------------------------------------------------------------------
+# sysctl Settings (Virtual Memory)
+# -----------------------------------------------------------------------------
+vm_dirty_ratio: 10
+vm_dirty_background_ratio: 5
+vm_dirty_expire_centisecs: 1500
+vm_dirty_writeback_centisecs: 100
+vm_swappiness: 10
+vm_vfs_cache_pressure: 50
+vm_max_map_count: 1000000
+vm_zone_reclaim_mode: 0
+
+# -----------------------------------------------------------------------------
+# Block Device Settings
+# -----------------------------------------------------------------------------
+block_nr_requests: 256
+block_read_ahead_kb: 128
+
+# -----------------------------------------------------------------------------
+# Transparent Huge Pages
+# -----------------------------------------------------------------------------
+# Options: "always", "madvise", "never"
+# "madvise" allows applications to opt-in to THP
+thp_enabled: "madvise"
+thp_defrag: "madvise"

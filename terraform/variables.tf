@@ -133,6 +133,33 @@ variable "gcs_bucket" {
 }
 
 # -----------------------------------------------------------------------------
+# Reth Configuration
+# -----------------------------------------------------------------------------
+variable "reth_batch_size" {
+  type        = number
+  default     = 10000
+  description = "Number of blocks per execution batch. Lower values = more frequent checkpoints."
+}
+
+variable "reth_batch_duration" {
+  type        = string
+  default     = "1m"
+  description = "Maximum duration per batch (e.g., '1m', '30s'). Limits time between checkpoints."
+}
+
+variable "db_max_size_gb" {
+  type        = number
+  default     = 15000
+  description = "Maximum database size in GB. Should be larger than expected final DB size."
+}
+
+variable "db_growth_step_mb" {
+  type        = number
+  default     = 4096
+  description = "Database growth increment in MB. Larger values reduce mmap syscalls."
+}
+
+# -----------------------------------------------------------------------------
 # Tracing Configuration
 # -----------------------------------------------------------------------------
 variable "tracing_enabled" {

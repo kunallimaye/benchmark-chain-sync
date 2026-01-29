@@ -5,7 +5,9 @@
 # Configures the benchmark VM with all required components:
 # - Common packages and user setup
 # - GCP Ops Agent for metrics
+# - System tuning (sysctl, I/O scheduler, THP, mount options)
 # - Install op-reth and op-node (binaries + systemd units)
+# - Deploy reth.toml configuration
 # - For LSSD machines: copy data from temp snapshot disk via rsync
 # - For persistent disks: data is already present (created from snapshot)
 # - Start op-reth and op-node services
@@ -27,14 +29,14 @@
       shell: while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 5; done
       changed_when: false
 
-    - name: Check if database already exists
-      stat:
-        path: "{{ mount_point }}/op-reth/db/mdbx.dat"
-      register: reth_db_exists
+    # NOTE: Removed stat task that was computing SHA1 checksum of 5TB database file
+    # The task registered reth_db_exists but it was never used anywhere
+    # If needed in future, use: stat: path=... get_checksum=no get_mime=no
 
   roles:
     - common
     - ops_agent
+    - system_tuning
     - role: op_reth
       vars:
         start_services: false

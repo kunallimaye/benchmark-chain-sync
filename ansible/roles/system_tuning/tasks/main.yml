@@ -1,0 +1,189 @@
+---
+# =============================================================================
+# System Tuning Role - Linux kernel tuning for MDBX/blockchain workloads
+# =============================================================================
+# Applies:
+#   - sysctl parameters (vm.dirty_ratio, vm.swappiness, etc.)
+#   - I/O scheduler configuration (none for NVMe, mq-deadline for PD)
+#   - Transparent Huge Pages settings
+#   - Block device tuning (nr_requests, read_ahead_kb)
+#   - Mount options (noatime, nodiratime)
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# sysctl Configuration
+# -----------------------------------------------------------------------------
+- name: Deploy sysctl configuration for MDBX
+  template:
+    src: 99-mdbx-tuning.conf.j2
+    dest: /etc/sysctl.d/99-mdbx-tuning.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Apply sysctl settings
+
+- name: Apply sysctl settings immediately
+  command: sysctl -p /etc/sysctl.d/99-mdbx-tuning.conf
+  changed_when: true
+
+# -----------------------------------------------------------------------------
+# Transparent Huge Pages
+# -----------------------------------------------------------------------------
+- name: Check THP enabled setting
+  command: cat /sys/kernel/mm/transparent_hugepage/enabled
+  register: thp_current
+  changed_when: false
+
+- name: Set Transparent Huge Pages to {{ thp_enabled }}
+  shell: |
+    echo {{ thp_enabled }} > /sys/kernel/mm/transparent_hugepage/enabled
+    echo {{ thp_defrag }} > /sys/kernel/mm/transparent_hugepage/defrag
+  when: thp_enabled not in thp_current.stdout
+
+# -----------------------------------------------------------------------------
+# Detect Data Disk Device
+# -----------------------------------------------------------------------------
+- name: Detect data disk device
+  shell: |
+    # Find the device mounted at {{ mount_point }}
+    DEVICE=$(findmnt -n -o SOURCE {{ mount_point }} 2>/dev/null | head -1)
+    if [ -z "$DEVICE" ]; then
+      echo ""
+    else
+      # Get the base device name (e.g., md0, nvme0n1, sda)
+      # Handle /dev/md0, /dev/nvme0n1, /dev/sda etc.
+      BASENAME=$(echo "$DEVICE" | sed 's|/dev/||' | sed 's/[0-9]*$//')
+      # For md devices, keep the number
+      if [[ "$DEVICE" == /dev/md* ]]; then
+        BASENAME=$(echo "$DEVICE" | sed 's|/dev/||')
+      fi
+      echo "$BASENAME"
+    fi
+  register: data_disk_device
+  changed_when: false
+
+- name: Debug - detected data disk
+  debug:
+    msg: "Detected data disk device: {{ data_disk_device.stdout }}"
+  when: data_disk_device.stdout != ""
+
+# -----------------------------------------------------------------------------
+# I/O Scheduler Configuration
+# -----------------------------------------------------------------------------
+- name: Set I/O scheduler for data disk
+  shell: |
+    DEVICE="{{ data_disk_device.stdout }}"
+    if [ -z "$DEVICE" ]; then
+      echo "No data disk found"
+      exit 0
+    fi
+    
+    SCHEDULER_PATH="/sys/block/${DEVICE}/queue/scheduler"
+    if [ ! -f "$SCHEDULER_PATH" ]; then
+      echo "Scheduler path not found for $DEVICE"
+      exit 0
+    fi
+    
+    # NVMe/RAID (md*) -> none, Persistent Disk (sd*) -> mq-deadline
+    if [[ "$DEVICE" == nvme* ]] || [[ "$DEVICE" == md* ]]; then
+      CURRENT=$(cat "$SCHEDULER_PATH" | grep -o '\[.*\]' | tr -d '[]')
+      if [ "$CURRENT" != "none" ]; then
+        echo none > "$SCHEDULER_PATH"
+        echo "Set scheduler to 'none' for $DEVICE (was: $CURRENT)"
+      else
+        echo "Scheduler already 'none' for $DEVICE"
+      fi
+    else
+      CURRENT=$(cat "$SCHEDULER_PATH" | grep -o '\[.*\]' | tr -d '[]')
+      if [ "$CURRENT" != "mq-deadline" ]; then
+        echo mq-deadline > "$SCHEDULER_PATH"
+        echo "Set scheduler to 'mq-deadline' for $DEVICE (was: $CURRENT)"
+      else
+        echo "Scheduler already 'mq-deadline' for $DEVICE"
+      fi
+    fi
+  register: scheduler_result
+  changed_when: "'Set scheduler' in scheduler_result.stdout"
+  when: data_disk_device.stdout != ""
+
+# -----------------------------------------------------------------------------
+# Block Device Tuning
+# -----------------------------------------------------------------------------
+- name: Set block device tuning parameters
+  shell: |
+    DEVICE="{{ data_disk_device.stdout }}"
+    if [ -z "$DEVICE" ]; then
+      exit 0
+    fi
+    
+    QUEUE_PATH="/sys/block/${DEVICE}/queue"
+    if [ -d "$QUEUE_PATH" ]; then
+      # Set nr_requests (queue depth)
+      if [ -f "${QUEUE_PATH}/nr_requests" ]; then
+        CURRENT=$(cat "${QUEUE_PATH}/nr_requests")
+        if [ "$CURRENT" != "{{ block_nr_requests }}" ]; then
+          echo {{ block_nr_requests }} > "${QUEUE_PATH}/nr_requests" 2>/dev/null || true
+        fi
+      fi
+      
+      # Set read_ahead_kb
+      if [ -f "${QUEUE_PATH}/read_ahead_kb" ]; then
+        CURRENT=$(cat "${QUEUE_PATH}/read_ahead_kb")
+        if [ "$CURRENT" != "{{ block_read_ahead_kb }}" ]; then
+          echo {{ block_read_ahead_kb }} > "${QUEUE_PATH}/read_ahead_kb" 2>/dev/null || true
+        fi
+      fi
+      
+      echo "Applied block device tuning to $DEVICE"
+    fi
+  register: block_tuning_result
+  changed_when: "'Applied' in block_tuning_result.stdout"
+  when: data_disk_device.stdout != ""
+
+# -----------------------------------------------------------------------------
+# Mount Options (noatime)
+# -----------------------------------------------------------------------------
+- name: Check current mount options for data disk
+  shell: |
+    findmnt -n -o OPTIONS {{ mount_point }} 2>/dev/null || echo ""
+  register: current_mount_options
+  changed_when: false
+
+- name: Remount data disk with noatime if needed
+  shell: |
+    CURRENT_OPTS="{{ current_mount_options.stdout }}"
+    if [[ "$CURRENT_OPTS" != *"noatime"* ]] && [ -n "$CURRENT_OPTS" ]; then
+      mount -o remount,noatime,nodiratime {{ mount_point }}
+      echo "Remounted with noatime"
+    else
+      echo "Already has noatime or not mounted"
+    fi
+  register: remount_result
+  changed_when: "'Remounted' in remount_result.stdout"
+  when: current_mount_options.stdout != ""
+
+- name: Check if fstab has entry for mount point
+  command: grep -q "{{ mount_point }}" /etc/fstab
+  register: fstab_has_entry
+  failed_when: false
+  changed_when: false
+
+- name: Check if fstab entry already has noatime
+  shell: grep "{{ mount_point }}" /etc/fstab | grep -q "noatime"
+  register: fstab_has_noatime
+  failed_when: false
+  changed_when: false
+  when: fstab_has_entry.rc == 0
+
+- name: Update fstab with noatime option
+  replace:
+    path: /etc/fstab
+    regexp: '(.*{{ mount_point }}.*defaults)([^,])'
+    replace: '\1,noatime,nodiratime\2'
+  when:
+    - fstab_has_entry.rc == 0
+    - fstab_has_noatime.rc != 0
+
+- name: System tuning complete
+  debug:
+    msg: "System tuning applied successfully"

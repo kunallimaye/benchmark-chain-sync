@@ -51,20 +51,6 @@ output "instances" {
   }
 }
 
-# =============================================================================
-# Download Disk Outputs (when create_download_disk = true)
-# =============================================================================
-
-output "download_disk_self_link" {
-  description = "Self link of the download disk"
-  value       = var.create_download_disk && length(module.download_disk) > 0 ? module.download_disk[0].disk_self_link : null
-}
-
-output "download_disk_name" {
-  description = "Name of the download disk"
-  value       = var.create_download_disk && length(module.download_disk) > 0 ? module.download_disk[0].disk_name : null
-}
-
 output "service_account_email" {
   description = "Email of the shared service account"
   value       = length(module.iam) > 0 ? module.iam[0].service_account_email : null
@@ -105,6 +91,11 @@ output "cloudbuild_pool_name" {
 }
 
 output "dashboard_url" {
-  description = "Cloud Monitoring dashboard URL"
+  description = "Cloud Monitoring dashboard URL (overview)"
   value       = var.create_l1 ? null : (length(module.monitoring) > 0 ? module.monitoring[0].dashboard_url : null)
+}
+
+output "dashboard_v1_url" {
+  description = "Cloud Monitoring dashboard URL (v1 - detailed stage analysis)"
+  value       = var.create_l1 ? null : (length(module.monitoring) > 0 ? module.monitoring[0].dashboard_v1_url : null)
 }
