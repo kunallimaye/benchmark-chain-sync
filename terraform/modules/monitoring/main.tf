@@ -586,24 +586,32 @@ locals {
   ]
 
   # ===========================================================================
-  # V1 Dashboard Tiles (Prometheus-Based Sync Status)
+  # V1 Dashboard Tiles (Entity-Based Sync Status)
   # ===========================================================================
-  # All data comes from Prometheus metrics scraped by Ops Agent.
-  # yPos values start from 0 for the v1 dashboard layout.
+  # Uses reth_sync_entities_processed for accurate progress tracking.
+  # Entity type varies by stage:
+  #   - Headers/Bodies: blocks
+  #   - SenderRecovery/TransactionLookup: transactions
+  #   - Execution: gas units
+  #   - AccountHashing: accounts
+  #   - StorageHashing: storage slots
+  #   - MerkleExecute: trie nodes
   #
   # Layout:
-  #   Row 1: Active Stages (throughput > 0)     - yPos=0,  height=16
-  #   Row 2: All Stages - Checkpoint            - yPos=16, height=24
-  #   Row 3: All Stages - Throughput            - yPos=40, height=24
-  #   Row 4: All Stages - ETA                   - yPos=64, height=24
-  #   Row 5: Checkpoint Progress Chart          - yPos=88, height=16
+  #   Row 1: Active Stages (entities/s > 0)     - yPos=0,  height=16
+  #   Row 2: All Stages - Progress %            - yPos=16, height=24
+  #   Row 3: All Stages - Throughput (entities) - yPos=40, height=24
+  #   Row 4: All Stages - ETA (hours)           - yPos=64, height=24
+  #   Row 5: All Stages - Checkpoint            - yPos=88, height=20
+  #   Row 6: Progress Chart                     - yPos=108, height=16
   # ===========================================================================
 
   # ---------------------------------------------------------------------------
-  # V1 Row 1: Active Stages (throughput > 0)
+  # V1 Row 1: Active Stages (entities/s > 0)
   # ---------------------------------------------------------------------------
-  # Shows only stages that are actively progressing (non-zero throughput).
+  # Shows only stages that are actively processing entities.
   # This highlights which stage each VM is currently working on.
+  # Stage column indicates entity type being processed.
   # ---------------------------------------------------------------------------
   v1_active_stages_tiles = [
     {
@@ -612,12 +620,12 @@ locals {
       width  = 48
       height = 16
       widget = {
-        title = "Active Stages (throughput > 0)"
+        title = "Active Stages (processing now)"
         timeSeriesTable = {
           dataSets = [
             {
               timeSeriesQuery = {
-                prometheusQuery = "rate(reth_sync_checkpoint{vm_name=~\"op-reth.*\"}[5m]) > 0"
+                prometheusQuery = "rate(reth_sync_entities_processed{vm_name=~\"op-reth.*\"}[5m]) > 0"
               }
               minAlignmentPeriod = "60s"
             }
@@ -632,12 +640,12 @@ locals {
             {
               column      = "stage"
               visible     = true
-              displayName = "Stage"
+              displayName = "Stage (entity type)"
             },
             {
               column      = "value"
               visible     = true
-              displayName = "Throughput (blocks/s)"
+              displayName = "entities/s"
             }
           ]
         }
@@ -646,23 +654,26 @@ locals {
   ]
 
   # ---------------------------------------------------------------------------
-  # V1 Row 2: All Stages - Checkpoint
+  # V1 Row 2: All Stages - Progress %
   # ---------------------------------------------------------------------------
-  # Shows current checkpoint (block number) for all stages per VM.
+  # Shows progress percentage for each stage: entities_processed / entities_total
+  # Universal metric that works across all stage types.
   # ---------------------------------------------------------------------------
-  v1_checkpoint_tiles = [
+  v1_progress_pct_tiles = [
     {
       xPos   = 0
       yPos   = 16
       width  = 48
       height = 24
       widget = {
-        title = "All Stages: Checkpoint (block #)"
+        title = "All Stages: Progress %"
         timeSeriesTable = {
           dataSets = [
             {
               timeSeriesQuery = {
-                prometheusQuery = "reth_sync_checkpoint{vm_name=~\"op-reth.*\"}"
+                # Progress = entities_processed / entities_total * 100
+                # Filter out stages where entities_total is 0 to avoid NaN
+                prometheusQuery = "reth_sync_entities_processed{vm_name=~\"op-reth.*\"} / reth_sync_entities_total{vm_name=~\"op-reth.*\"} * 100"
               }
               minAlignmentPeriod = "60s"
             }
@@ -682,7 +693,7 @@ locals {
             {
               column      = "value"
               visible     = true
-              displayName = "Checkpoint"
+              displayName = "Progress %"
             }
           ]
         }
@@ -691,9 +702,10 @@ locals {
   ]
 
   # ---------------------------------------------------------------------------
-  # V1 Row 3: All Stages - Throughput
+  # V1 Row 3: All Stages - Throughput (entities/s)
   # ---------------------------------------------------------------------------
-  # Shows throughput (blocks/s) for all stages per VM.
+  # Shows throughput in entities/s for all stages.
+  # Entity type varies by stage (see header comment for mapping).
   # Active stages will have non-zero values.
   # ---------------------------------------------------------------------------
   v1_throughput_tiles = [
@@ -703,12 +715,12 @@ locals {
       width  = 48
       height = 24
       widget = {
-        title = "All Stages: Throughput (blocks/s)"
+        title = "All Stages: Throughput (entities/s)"
         timeSeriesTable = {
           dataSets = [
             {
               timeSeriesQuery = {
-                prometheusQuery = "rate(reth_sync_checkpoint{vm_name=~\"op-reth.*\"}[5m])"
+                prometheusQuery = "rate(reth_sync_entities_processed{vm_name=~\"op-reth.*\"}[5m])"
               }
               minAlignmentPeriod = "60s"
             }
@@ -723,12 +735,12 @@ locals {
             {
               column      = "stage"
               visible     = true
-              displayName = "Stage"
+              displayName = "Stage (entity type)"
             },
             {
               column      = "value"
               visible     = true
-              displayName = "blocks/s"
+              displayName = "entities/s"
             }
           ]
         }
@@ -739,9 +751,9 @@ locals {
   # ---------------------------------------------------------------------------
   # V1 Row 4: All Stages - ETA (hours)
   # ---------------------------------------------------------------------------
-  # Estimated time to reach L2 tip for each stage.
-  # ETA = (target - checkpoint) / (throughput * 3600)
-  # Uses clamp_min to avoid division by zero (shows large number for 0 throughput).
+  # Estimated time to complete each stage based on entity processing rate.
+  # ETA = (entities_total - entities_processed) / rate(entities_processed) / 3600
+  # Uses clamp_min to avoid division by zero.
   # ---------------------------------------------------------------------------
   v1_eta_tiles = [
     {
@@ -755,10 +767,9 @@ locals {
           dataSets = [
             {
               timeSeriesQuery = {
-                # ETA = (L2_tip - checkpoint) / (throughput_per_hour)
-                # Uses group_right to broadcast L2 tip to all stages
+                # ETA = remaining_entities / entities_per_second / 3600
                 # clamp_min prevents division by zero (shows large number instead of Inf)
-                prometheusQuery = "(op_node_default_refs_number{layer=\"l2\", type=\"l2_unsafe\", vm_name=~\"op-reth.*\"} - on(vm_name) group_right(stage) reth_sync_checkpoint{vm_name=~\"op-reth.*\"}) / on(vm_name, stage) clamp_min(rate(reth_sync_checkpoint{vm_name=~\"op-reth.*\"}[5m]) * 3600, 0.0001)"
+                prometheusQuery = "(reth_sync_entities_total{vm_name=~\"op-reth.*\"} - reth_sync_entities_processed{vm_name=~\"op-reth.*\"}) / clamp_min(rate(reth_sync_entities_processed{vm_name=~\"op-reth.*\"}[5m]), 0.0001) / 3600"
               }
               minAlignmentPeriod = "60s"
             }
@@ -787,29 +798,75 @@ locals {
   ]
 
   # ---------------------------------------------------------------------------
-  # V1 Row 5: Checkpoint Progress Chart
+  # V1 Row 5: All Stages - Checkpoint (block #)
   # ---------------------------------------------------------------------------
-  # Line chart showing checkpoint progression over time per VM/stage.
+  # Shows current block checkpoint for all stages per VM.
+  # This is the block number that has been fully processed by each stage.
+  # ---------------------------------------------------------------------------
+  v1_checkpoint_tiles = [
+    {
+      xPos   = 0
+      yPos   = 88
+      width  = 48
+      height = 20
+      widget = {
+        title = "All Stages: Checkpoint (block #)"
+        timeSeriesTable = {
+          dataSets = [
+            {
+              timeSeriesQuery = {
+                prometheusQuery = "reth_sync_checkpoint{vm_name=~\"op-reth.*\"}"
+              }
+              minAlignmentPeriod = "60s"
+            }
+          ]
+          metricVisualization = "NUMBER"
+          columnSettings = [
+            {
+              column      = "vm_name"
+              visible     = true
+              displayName = "VM"
+            },
+            {
+              column      = "stage"
+              visible     = true
+              displayName = "Stage"
+            },
+            {
+              column      = "value"
+              visible     = true
+              displayName = "Block #"
+            }
+          ]
+        }
+      }
+    }
+  ]
+
+  # ---------------------------------------------------------------------------
+  # V1 Row 6: Progress Chart (Progress % over time)
+  # ---------------------------------------------------------------------------
+  # Line chart showing progress percentage over time per VM/stage.
   # Useful for visualizing sync progress and identifying slowdowns.
   # ---------------------------------------------------------------------------
   v1_progress_chart_tiles = [
     {
       xPos   = 0
-      yPos   = 88
+      yPos   = 108
       width  = 48
       height = 16
       widget = {
-        title = "Checkpoint Progress Over Time"
+        title = "Progress % Over Time"
         xyChart = {
           dataSets = [{
             timeSeriesQuery = {
-              prometheusQuery = "reth_sync_checkpoint{vm_name=~\"op-reth.*\"}"
+              prometheusQuery = "reth_sync_entities_processed{vm_name=~\"op-reth.*\"} / reth_sync_entities_total{vm_name=~\"op-reth.*\"} * 100"
             }
             plotType       = "LINE"
             legendTemplate = "{{vm_name}} - {{stage}}"
           }]
           yAxis = {
-            label = "Block #"
+            label = "Progress %"
           }
         }
       }
@@ -818,17 +875,18 @@ locals {
 }
 
 # -----------------------------------------------------------------------------
-# Dashboard V1 - Prometheus-Based Sync Status
+# Dashboard V1 - Entity-Based Sync Status
 # -----------------------------------------------------------------------------
 # Layout:
-#   Row 1: Active Stages (throughput > 0)     - yPos=0,  height=16
-#   Row 2: All Stages - Checkpoint            - yPos=16, height=24
-#   Row 3: All Stages - Throughput            - yPos=40, height=24
-#   Row 4: All Stages - ETA                   - yPos=64, height=24
-#   Row 5: Checkpoint Progress Chart          - yPos=88, height=16
+#   Row 1: Active Stages (entities/s > 0)     - yPos=0,   height=16
+#   Row 2: All Stages - Progress %            - yPos=16,  height=24
+#   Row 3: All Stages - Throughput (entities) - yPos=40,  height=24
+#   Row 4: All Stages - ETA (hours)           - yPos=64,  height=24
+#   Row 5: All Stages - Checkpoint            - yPos=88,  height=20
+#   Row 6: Progress Chart                     - yPos=108, height=16
 #
-# All data comes from Prometheus metrics (reth_sync_checkpoint, op_node_default_refs_number).
-# No dependency on log-based metrics.
+# Uses reth_sync_entities_processed for accurate mid-batch progress tracking.
+# Entity type varies by stage (stage column indicates what's being processed).
 # -----------------------------------------------------------------------------
 resource "google_monitoring_dashboard" "reth_benchmark_v1" {
   dashboard_json = jsonencode({
@@ -838,9 +896,10 @@ resource "google_monitoring_dashboard" "reth_benchmark_v1" {
       columns = 48
       tiles = concat(
         local.v1_active_stages_tiles,
-        local.v1_checkpoint_tiles,
+        local.v1_progress_pct_tiles,
         local.v1_throughput_tiles,
         local.v1_eta_tiles,
+        local.v1_checkpoint_tiles,
         local.v1_progress_chart_tiles
       )
     }
