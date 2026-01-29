@@ -586,16 +586,25 @@ locals {
   ]
 
   # ===========================================================================
-  # V1 Dashboard Tiles (Entity-Based Sync Status)
+  # V1 Dashboard Tiles (Entity-Based Sync Status with Stage Sequence Numbers)
   # ===========================================================================
   # Uses reth_sync_entities_processed for accurate progress tracking.
-  # Entity type varies by stage:
-  #   - Headers/Bodies: blocks
-  #   - SenderRecovery/TransactionLookup: transactions
-  #   - Execution: gas units
-  #   - AccountHashing: accounts
-  #   - StorageHashing: storage slots
-  #   - MerkleExecute: trie nodes
+  # Stage names are prefixed with sequence numbers (01-13) for sorting.
+  #
+  # Stage sequence and entity types:
+  #   01-Headers:             blocks
+  #   02-Bodies:              blocks
+  #   03-SenderRecovery:      transactions
+  #   04-Execution:           gas units
+  #   05-MerkleUnwind:        (cleanup)
+  #   06-AccountHashing:      accounts
+  #   07-StorageHashing:      storage slots
+  #   08-MerkleExecute:       trie nodes
+  #   09-TransactionLookup:   transactions
+  #   10-IndexStorageHistory: history entries
+  #   11-IndexAccountHistory: history entries
+  #   12-Prune:               (cleanup)
+  #   13-Finish:              (finalization)
   #
   # Layout:
   #   Row 1: Active Stages (entities/s > 0)     - yPos=0,  height=16
@@ -607,11 +616,14 @@ locals {
   # ===========================================================================
 
   # ---------------------------------------------------------------------------
-  # V1 Row 1: Active Stages (entities/s > 0)
+  # Helper: Stage label_replace chain for reth_sync_entities_processed
   # ---------------------------------------------------------------------------
-  # Shows only stages that are actively processing entities.
-  # This highlights which stage each VM is currently working on.
-  # Stage column indicates entity type being processed.
+  # Adds sequence numbers to stage labels for proper sorting.
+  # Format: label_replace(..., "stage", "XX-StageName", "stage", ".*")
+  # ---------------------------------------------------------------------------
+
+  # ---------------------------------------------------------------------------
+  # V1 Row 1: Active Stages (entities/s > 0)
   # ---------------------------------------------------------------------------
   v1_active_stages_tiles = [
     {
@@ -625,7 +637,25 @@ locals {
           dataSets = [
             {
               timeSeriesQuery = {
-                prometheusQuery = "rate(reth_sync_entities_processed{vm_name=~\"op-reth.*\"}[5m]) > 0"
+                prometheusQuery = <<-EOT
+rate(
+  label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(
+    reth_sync_entities_processed{vm_name=~"op-reth.*"},
+    "stage", "01-Headers", "stage", "^Headers$"),
+    "stage", "02-Bodies", "stage", "^Bodies$"),
+    "stage", "03-SenderRecovery", "stage", "^SenderRecovery$"),
+    "stage", "04-Execution", "stage", "^Execution$"),
+    "stage", "05-MerkleUnwind", "stage", "^MerkleUnwind$"),
+    "stage", "06-AccountHashing", "stage", "^AccountHashing$"),
+    "stage", "07-StorageHashing", "stage", "^StorageHashing$"),
+    "stage", "08-MerkleExecute", "stage", "^MerkleExecute$"),
+    "stage", "09-TransactionLookup", "stage", "^TransactionLookup$"),
+    "stage", "10-IndexStorageHistory", "stage", "^IndexStorageHistory$"),
+    "stage", "11-IndexAccountHistory", "stage", "^IndexAccountHistory$"),
+    "stage", "12-Prune", "stage", "^Prune$"),
+    "stage", "13-Finish", "stage", "^Finish$")
+[5m]) > 0
+EOT
               }
               minAlignmentPeriod = "60s"
             }
@@ -640,7 +670,7 @@ locals {
             {
               column      = "stage"
               visible     = true
-              displayName = "Stage (entity type)"
+              displayName = "Stage"
             },
             {
               column      = "value"
@@ -656,9 +686,6 @@ locals {
   # ---------------------------------------------------------------------------
   # V1 Row 2: All Stages - Progress %
   # ---------------------------------------------------------------------------
-  # Shows progress percentage for each stage: entities_processed / entities_total
-  # Universal metric that works across all stage types.
-  # ---------------------------------------------------------------------------
   v1_progress_pct_tiles = [
     {
       xPos   = 0
@@ -671,9 +698,40 @@ locals {
           dataSets = [
             {
               timeSeriesQuery = {
-                # Progress = entities_processed / entities_total * 100
-                # Filter out stages where entities_total is 0 to avoid NaN
-                prometheusQuery = "reth_sync_entities_processed{vm_name=~\"op-reth.*\"} / reth_sync_entities_total{vm_name=~\"op-reth.*\"} * 100"
+                prometheusQuery = <<-EOT
+label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(
+  reth_sync_entities_processed{vm_name=~"op-reth.*"},
+  "stage", "01-Headers", "stage", "^Headers$"),
+  "stage", "02-Bodies", "stage", "^Bodies$"),
+  "stage", "03-SenderRecovery", "stage", "^SenderRecovery$"),
+  "stage", "04-Execution", "stage", "^Execution$"),
+  "stage", "05-MerkleUnwind", "stage", "^MerkleUnwind$"),
+  "stage", "06-AccountHashing", "stage", "^AccountHashing$"),
+  "stage", "07-StorageHashing", "stage", "^StorageHashing$"),
+  "stage", "08-MerkleExecute", "stage", "^MerkleExecute$"),
+  "stage", "09-TransactionLookup", "stage", "^TransactionLookup$"),
+  "stage", "10-IndexStorageHistory", "stage", "^IndexStorageHistory$"),
+  "stage", "11-IndexAccountHistory", "stage", "^IndexAccountHistory$"),
+  "stage", "12-Prune", "stage", "^Prune$"),
+  "stage", "13-Finish", "stage", "^Finish$")
+/
+label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(
+  reth_sync_entities_total{vm_name=~"op-reth.*"},
+  "stage", "01-Headers", "stage", "^Headers$"),
+  "stage", "02-Bodies", "stage", "^Bodies$"),
+  "stage", "03-SenderRecovery", "stage", "^SenderRecovery$"),
+  "stage", "04-Execution", "stage", "^Execution$"),
+  "stage", "05-MerkleUnwind", "stage", "^MerkleUnwind$"),
+  "stage", "06-AccountHashing", "stage", "^AccountHashing$"),
+  "stage", "07-StorageHashing", "stage", "^StorageHashing$"),
+  "stage", "08-MerkleExecute", "stage", "^MerkleExecute$"),
+  "stage", "09-TransactionLookup", "stage", "^TransactionLookup$"),
+  "stage", "10-IndexStorageHistory", "stage", "^IndexStorageHistory$"),
+  "stage", "11-IndexAccountHistory", "stage", "^IndexAccountHistory$"),
+  "stage", "12-Prune", "stage", "^Prune$"),
+  "stage", "13-Finish", "stage", "^Finish$")
+* 100
+EOT
               }
               minAlignmentPeriod = "60s"
             }
@@ -704,10 +762,6 @@ locals {
   # ---------------------------------------------------------------------------
   # V1 Row 3: All Stages - Throughput (entities/s)
   # ---------------------------------------------------------------------------
-  # Shows throughput in entities/s for all stages.
-  # Entity type varies by stage (see header comment for mapping).
-  # Active stages will have non-zero values.
-  # ---------------------------------------------------------------------------
   v1_throughput_tiles = [
     {
       xPos   = 0
@@ -720,7 +774,25 @@ locals {
           dataSets = [
             {
               timeSeriesQuery = {
-                prometheusQuery = "rate(reth_sync_entities_processed{vm_name=~\"op-reth.*\"}[5m])"
+                prometheusQuery = <<-EOT
+rate(
+  label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(
+    reth_sync_entities_processed{vm_name=~"op-reth.*"},
+    "stage", "01-Headers", "stage", "^Headers$"),
+    "stage", "02-Bodies", "stage", "^Bodies$"),
+    "stage", "03-SenderRecovery", "stage", "^SenderRecovery$"),
+    "stage", "04-Execution", "stage", "^Execution$"),
+    "stage", "05-MerkleUnwind", "stage", "^MerkleUnwind$"),
+    "stage", "06-AccountHashing", "stage", "^AccountHashing$"),
+    "stage", "07-StorageHashing", "stage", "^StorageHashing$"),
+    "stage", "08-MerkleExecute", "stage", "^MerkleExecute$"),
+    "stage", "09-TransactionLookup", "stage", "^TransactionLookup$"),
+    "stage", "10-IndexStorageHistory", "stage", "^IndexStorageHistory$"),
+    "stage", "11-IndexAccountHistory", "stage", "^IndexAccountHistory$"),
+    "stage", "12-Prune", "stage", "^Prune$"),
+    "stage", "13-Finish", "stage", "^Finish$")
+[5m])
+EOT
               }
               minAlignmentPeriod = "60s"
             }
@@ -735,7 +807,7 @@ locals {
             {
               column      = "stage"
               visible     = true
-              displayName = "Stage (entity type)"
+              displayName = "Stage"
             },
             {
               column      = "value"
@@ -751,10 +823,6 @@ locals {
   # ---------------------------------------------------------------------------
   # V1 Row 4: All Stages - ETA (hours)
   # ---------------------------------------------------------------------------
-  # Estimated time to complete each stage based on entity processing rate.
-  # ETA = (entities_total - entities_processed) / rate(entities_processed) / 3600
-  # Uses clamp_min to avoid division by zero.
-  # ---------------------------------------------------------------------------
   v1_eta_tiles = [
     {
       xPos   = 0
@@ -767,9 +835,60 @@ locals {
           dataSets = [
             {
               timeSeriesQuery = {
-                # ETA = remaining_entities / entities_per_second / 3600
-                # clamp_min prevents division by zero (shows large number instead of Inf)
-                prometheusQuery = "(reth_sync_entities_total{vm_name=~\"op-reth.*\"} - reth_sync_entities_processed{vm_name=~\"op-reth.*\"}) / clamp_min(rate(reth_sync_entities_processed{vm_name=~\"op-reth.*\"}[5m]), 0.0001) / 3600"
+                prometheusQuery = <<-EOT
+(
+  label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(
+    reth_sync_entities_total{vm_name=~"op-reth.*"},
+    "stage", "01-Headers", "stage", "^Headers$"),
+    "stage", "02-Bodies", "stage", "^Bodies$"),
+    "stage", "03-SenderRecovery", "stage", "^SenderRecovery$"),
+    "stage", "04-Execution", "stage", "^Execution$"),
+    "stage", "05-MerkleUnwind", "stage", "^MerkleUnwind$"),
+    "stage", "06-AccountHashing", "stage", "^AccountHashing$"),
+    "stage", "07-StorageHashing", "stage", "^StorageHashing$"),
+    "stage", "08-MerkleExecute", "stage", "^MerkleExecute$"),
+    "stage", "09-TransactionLookup", "stage", "^TransactionLookup$"),
+    "stage", "10-IndexStorageHistory", "stage", "^IndexStorageHistory$"),
+    "stage", "11-IndexAccountHistory", "stage", "^IndexAccountHistory$"),
+    "stage", "12-Prune", "stage", "^Prune$"),
+    "stage", "13-Finish", "stage", "^Finish$")
+  -
+  label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(
+    reth_sync_entities_processed{vm_name=~"op-reth.*"},
+    "stage", "01-Headers", "stage", "^Headers$"),
+    "stage", "02-Bodies", "stage", "^Bodies$"),
+    "stage", "03-SenderRecovery", "stage", "^SenderRecovery$"),
+    "stage", "04-Execution", "stage", "^Execution$"),
+    "stage", "05-MerkleUnwind", "stage", "^MerkleUnwind$"),
+    "stage", "06-AccountHashing", "stage", "^AccountHashing$"),
+    "stage", "07-StorageHashing", "stage", "^StorageHashing$"),
+    "stage", "08-MerkleExecute", "stage", "^MerkleExecute$"),
+    "stage", "09-TransactionLookup", "stage", "^TransactionLookup$"),
+    "stage", "10-IndexStorageHistory", "stage", "^IndexStorageHistory$"),
+    "stage", "11-IndexAccountHistory", "stage", "^IndexAccountHistory$"),
+    "stage", "12-Prune", "stage", "^Prune$"),
+    "stage", "13-Finish", "stage", "^Finish$")
+)
+/ clamp_min(
+  rate(
+    label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(
+      reth_sync_entities_processed{vm_name=~"op-reth.*"},
+      "stage", "01-Headers", "stage", "^Headers$"),
+      "stage", "02-Bodies", "stage", "^Bodies$"),
+      "stage", "03-SenderRecovery", "stage", "^SenderRecovery$"),
+      "stage", "04-Execution", "stage", "^Execution$"),
+      "stage", "05-MerkleUnwind", "stage", "^MerkleUnwind$"),
+      "stage", "06-AccountHashing", "stage", "^AccountHashing$"),
+      "stage", "07-StorageHashing", "stage", "^StorageHashing$"),
+      "stage", "08-MerkleExecute", "stage", "^MerkleExecute$"),
+      "stage", "09-TransactionLookup", "stage", "^TransactionLookup$"),
+      "stage", "10-IndexStorageHistory", "stage", "^IndexStorageHistory$"),
+      "stage", "11-IndexAccountHistory", "stage", "^IndexAccountHistory$"),
+      "stage", "12-Prune", "stage", "^Prune$"),
+      "stage", "13-Finish", "stage", "^Finish$")
+  [5m]), 0.0001)
+/ 3600
+EOT
               }
               minAlignmentPeriod = "60s"
             }
@@ -800,9 +919,6 @@ locals {
   # ---------------------------------------------------------------------------
   # V1 Row 5: All Stages - Checkpoint (block #)
   # ---------------------------------------------------------------------------
-  # Shows current block checkpoint for all stages per VM.
-  # This is the block number that has been fully processed by each stage.
-  # ---------------------------------------------------------------------------
   v1_checkpoint_tiles = [
     {
       xPos   = 0
@@ -815,7 +931,23 @@ locals {
           dataSets = [
             {
               timeSeriesQuery = {
-                prometheusQuery = "reth_sync_checkpoint{vm_name=~\"op-reth.*\"}"
+                prometheusQuery = <<-EOT
+label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(
+  reth_sync_checkpoint{vm_name=~"op-reth.*"},
+  "stage", "01-Headers", "stage", "^Headers$"),
+  "stage", "02-Bodies", "stage", "^Bodies$"),
+  "stage", "03-SenderRecovery", "stage", "^SenderRecovery$"),
+  "stage", "04-Execution", "stage", "^Execution$"),
+  "stage", "05-MerkleUnwind", "stage", "^MerkleUnwind$"),
+  "stage", "06-AccountHashing", "stage", "^AccountHashing$"),
+  "stage", "07-StorageHashing", "stage", "^StorageHashing$"),
+  "stage", "08-MerkleExecute", "stage", "^MerkleExecute$"),
+  "stage", "09-TransactionLookup", "stage", "^TransactionLookup$"),
+  "stage", "10-IndexStorageHistory", "stage", "^IndexStorageHistory$"),
+  "stage", "11-IndexAccountHistory", "stage", "^IndexAccountHistory$"),
+  "stage", "12-Prune", "stage", "^Prune$"),
+  "stage", "13-Finish", "stage", "^Finish$")
+EOT
               }
               minAlignmentPeriod = "60s"
             }
@@ -860,7 +992,40 @@ locals {
         xyChart = {
           dataSets = [{
             timeSeriesQuery = {
-              prometheusQuery = "reth_sync_entities_processed{vm_name=~\"op-reth.*\"} / reth_sync_entities_total{vm_name=~\"op-reth.*\"} * 100"
+              prometheusQuery = <<-EOT
+label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(
+  reth_sync_entities_processed{vm_name=~"op-reth.*"},
+  "stage", "01-Headers", "stage", "^Headers$"),
+  "stage", "02-Bodies", "stage", "^Bodies$"),
+  "stage", "03-SenderRecovery", "stage", "^SenderRecovery$"),
+  "stage", "04-Execution", "stage", "^Execution$"),
+  "stage", "05-MerkleUnwind", "stage", "^MerkleUnwind$"),
+  "stage", "06-AccountHashing", "stage", "^AccountHashing$"),
+  "stage", "07-StorageHashing", "stage", "^StorageHashing$"),
+  "stage", "08-MerkleExecute", "stage", "^MerkleExecute$"),
+  "stage", "09-TransactionLookup", "stage", "^TransactionLookup$"),
+  "stage", "10-IndexStorageHistory", "stage", "^IndexStorageHistory$"),
+  "stage", "11-IndexAccountHistory", "stage", "^IndexAccountHistory$"),
+  "stage", "12-Prune", "stage", "^Prune$"),
+  "stage", "13-Finish", "stage", "^Finish$")
+/
+label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(
+  reth_sync_entities_total{vm_name=~"op-reth.*"},
+  "stage", "01-Headers", "stage", "^Headers$"),
+  "stage", "02-Bodies", "stage", "^Bodies$"),
+  "stage", "03-SenderRecovery", "stage", "^SenderRecovery$"),
+  "stage", "04-Execution", "stage", "^Execution$"),
+  "stage", "05-MerkleUnwind", "stage", "^MerkleUnwind$"),
+  "stage", "06-AccountHashing", "stage", "^AccountHashing$"),
+  "stage", "07-StorageHashing", "stage", "^StorageHashing$"),
+  "stage", "08-MerkleExecute", "stage", "^MerkleExecute$"),
+  "stage", "09-TransactionLookup", "stage", "^TransactionLookup$"),
+  "stage", "10-IndexStorageHistory", "stage", "^IndexStorageHistory$"),
+  "stage", "11-IndexAccountHistory", "stage", "^IndexAccountHistory$"),
+  "stage", "12-Prune", "stage", "^Prune$"),
+  "stage", "13-Finish", "stage", "^Finish$")
+* 100
+EOT
             }
             plotType       = "LINE"
             legendTemplate = "{{vm_name}} - {{stage}}"
