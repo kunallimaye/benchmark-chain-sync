@@ -49,7 +49,8 @@ resource "google_logging_metric" "reth_stage_log_count" {
 
   label_extractors = {
     "stage"   = "REGEXP_EXTRACT(textPayload, \"stage=(\\\\w+)\")"
-    "vm_name" = "EXTRACT(resource.labels.instance_id)"
+    # Extract VM hostname from syslog prefix: "<timestamp>+00:00 <hostname> op-reth[pid]:"
+    "vm_name" = "REGEXP_EXTRACT(textPayload, \"\\\\+00:00 ([\\\\w-]+) op-reth\")"
   }
 }
 
