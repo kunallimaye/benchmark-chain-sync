@@ -637,24 +637,24 @@ locals {
           dataSets = [
             {
               timeSeriesQuery = {
+                # NOTE: label_replace must be applied AFTER rate() in Cloud Monitoring
                 prometheusQuery = <<-EOT
-rate(
-  label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(
-    reth_sync_entities_processed{vm_name=~"op-reth.*"},
-    "stage", "01-Headers", "stage", "^Headers$"),
-    "stage", "02-Bodies", "stage", "^Bodies$"),
-    "stage", "03-SenderRecovery", "stage", "^SenderRecovery$"),
-    "stage", "04-Execution", "stage", "^Execution$"),
-    "stage", "05-MerkleUnwind", "stage", "^MerkleUnwind$"),
-    "stage", "06-AccountHashing", "stage", "^AccountHashing$"),
-    "stage", "07-StorageHashing", "stage", "^StorageHashing$"),
-    "stage", "08-MerkleExecute", "stage", "^MerkleExecute$"),
-    "stage", "09-TransactionLookup", "stage", "^TransactionLookup$"),
-    "stage", "10-IndexStorageHistory", "stage", "^IndexStorageHistory$"),
-    "stage", "11-IndexAccountHistory", "stage", "^IndexAccountHistory$"),
-    "stage", "12-Prune", "stage", "^Prune$"),
-    "stage", "13-Finish", "stage", "^Finish$")
-[5m]) > 0
+label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(
+  rate(reth_sync_entities_processed{vm_name=~"op-reth.*"}[5m]),
+  "stage", "01-Headers", "stage", "^Headers$"),
+  "stage", "02-Bodies", "stage", "^Bodies$"),
+  "stage", "03-SenderRecovery", "stage", "^SenderRecovery$"),
+  "stage", "04-Execution", "stage", "^Execution$"),
+  "stage", "05-MerkleUnwind", "stage", "^MerkleUnwind$"),
+  "stage", "06-AccountHashing", "stage", "^AccountHashing$"),
+  "stage", "07-StorageHashing", "stage", "^StorageHashing$"),
+  "stage", "08-MerkleExecute", "stage", "^MerkleExecute$"),
+  "stage", "09-TransactionLookup", "stage", "^TransactionLookup$"),
+  "stage", "10-IndexStorageHistory", "stage", "^IndexStorageHistory$"),
+  "stage", "11-IndexAccountHistory", "stage", "^IndexAccountHistory$"),
+  "stage", "12-Prune", "stage", "^Prune$"),
+  "stage", "13-Finish", "stage", "^Finish$")
+> 0
 EOT
               }
               minAlignmentPeriod = "60s"
@@ -774,24 +774,23 @@ EOT
           dataSets = [
             {
               timeSeriesQuery = {
+                # NOTE: label_replace must be applied AFTER rate() in Cloud Monitoring
                 prometheusQuery = <<-EOT
-rate(
-  label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(
-    reth_sync_entities_processed{vm_name=~"op-reth.*"},
-    "stage", "01-Headers", "stage", "^Headers$"),
-    "stage", "02-Bodies", "stage", "^Bodies$"),
-    "stage", "03-SenderRecovery", "stage", "^SenderRecovery$"),
-    "stage", "04-Execution", "stage", "^Execution$"),
-    "stage", "05-MerkleUnwind", "stage", "^MerkleUnwind$"),
-    "stage", "06-AccountHashing", "stage", "^AccountHashing$"),
-    "stage", "07-StorageHashing", "stage", "^StorageHashing$"),
-    "stage", "08-MerkleExecute", "stage", "^MerkleExecute$"),
-    "stage", "09-TransactionLookup", "stage", "^TransactionLookup$"),
-    "stage", "10-IndexStorageHistory", "stage", "^IndexStorageHistory$"),
-    "stage", "11-IndexAccountHistory", "stage", "^IndexAccountHistory$"),
-    "stage", "12-Prune", "stage", "^Prune$"),
-    "stage", "13-Finish", "stage", "^Finish$")
-[5m])
+label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(
+  rate(reth_sync_entities_processed{vm_name=~"op-reth.*"}[5m]),
+  "stage", "01-Headers", "stage", "^Headers$"),
+  "stage", "02-Bodies", "stage", "^Bodies$"),
+  "stage", "03-SenderRecovery", "stage", "^SenderRecovery$"),
+  "stage", "04-Execution", "stage", "^Execution$"),
+  "stage", "05-MerkleUnwind", "stage", "^MerkleUnwind$"),
+  "stage", "06-AccountHashing", "stage", "^AccountHashing$"),
+  "stage", "07-StorageHashing", "stage", "^StorageHashing$"),
+  "stage", "08-MerkleExecute", "stage", "^MerkleExecute$"),
+  "stage", "09-TransactionLookup", "stage", "^TransactionLookup$"),
+  "stage", "10-IndexStorageHistory", "stage", "^IndexStorageHistory$"),
+  "stage", "11-IndexAccountHistory", "stage", "^IndexAccountHistory$"),
+  "stage", "12-Prune", "stage", "^Prune$"),
+  "stage", "13-Finish", "stage", "^Finish$")
 EOT
               }
               minAlignmentPeriod = "60s"
@@ -835,6 +834,8 @@ EOT
           dataSets = [
             {
               timeSeriesQuery = {
+                # NOTE: label_replace must be applied AFTER rate() in Cloud Monitoring
+                # ETA = (entities_total - entities_processed) / rate(entities_processed) / 3600
                 prometheusQuery = <<-EOT
 (
   label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(
@@ -870,23 +871,22 @@ EOT
     "stage", "13-Finish", "stage", "^Finish$")
 )
 / clamp_min(
-  rate(
-    label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(
-      reth_sync_entities_processed{vm_name=~"op-reth.*"},
-      "stage", "01-Headers", "stage", "^Headers$"),
-      "stage", "02-Bodies", "stage", "^Bodies$"),
-      "stage", "03-SenderRecovery", "stage", "^SenderRecovery$"),
-      "stage", "04-Execution", "stage", "^Execution$"),
-      "stage", "05-MerkleUnwind", "stage", "^MerkleUnwind$"),
-      "stage", "06-AccountHashing", "stage", "^AccountHashing$"),
-      "stage", "07-StorageHashing", "stage", "^StorageHashing$"),
-      "stage", "08-MerkleExecute", "stage", "^MerkleExecute$"),
-      "stage", "09-TransactionLookup", "stage", "^TransactionLookup$"),
-      "stage", "10-IndexStorageHistory", "stage", "^IndexStorageHistory$"),
-      "stage", "11-IndexAccountHistory", "stage", "^IndexAccountHistory$"),
-      "stage", "12-Prune", "stage", "^Prune$"),
-      "stage", "13-Finish", "stage", "^Finish$")
-  [5m]), 0.0001)
+  label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(
+    rate(reth_sync_entities_processed{vm_name=~"op-reth.*"}[5m]),
+    "stage", "01-Headers", "stage", "^Headers$"),
+    "stage", "02-Bodies", "stage", "^Bodies$"),
+    "stage", "03-SenderRecovery", "stage", "^SenderRecovery$"),
+    "stage", "04-Execution", "stage", "^Execution$"),
+    "stage", "05-MerkleUnwind", "stage", "^MerkleUnwind$"),
+    "stage", "06-AccountHashing", "stage", "^AccountHashing$"),
+    "stage", "07-StorageHashing", "stage", "^StorageHashing$"),
+    "stage", "08-MerkleExecute", "stage", "^MerkleExecute$"),
+    "stage", "09-TransactionLookup", "stage", "^TransactionLookup$"),
+    "stage", "10-IndexStorageHistory", "stage", "^IndexStorageHistory$"),
+    "stage", "11-IndexAccountHistory", "stage", "^IndexAccountHistory$"),
+    "stage", "12-Prune", "stage", "^Prune$"),
+    "stage", "13-Finish", "stage", "^Finish$")
+, 0.0001)
 / 3600
 EOT
               }
