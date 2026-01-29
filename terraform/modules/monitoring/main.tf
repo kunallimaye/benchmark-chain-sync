@@ -586,61 +586,83 @@ locals {
   ]
 
   # ===========================================================================
-  # V1 Dashboard Tiles (Detailed Stage Analysis)
+  # V1 Dashboard Tiles (Prometheus-Based Sync Status)
   # ===========================================================================
-  # These tiles are used in the op-reth Benchmark v1 dashboard.
+  # All data comes from Prometheus metrics scraped by Ops Agent.
   # yPos values start from 0 for the v1 dashboard layout.
+  #
+  # Layout:
+  #   Row 1: Active Stages (throughput > 0)     - yPos=0,  height=16
+  #   Row 2: All Stages - Checkpoint            - yPos=16, height=24
+  #   Row 3: All Stages - Throughput            - yPos=40, height=24
+  #   Row 4: All Stages - ETA                   - yPos=64, height=24
+  #   Row 5: Checkpoint Progress Chart          - yPos=88, height=16
   # ===========================================================================
 
   # ---------------------------------------------------------------------------
-  # V1 Row 1: Time Spent Per Stage (stacked area chart)
+  # V1 Row 1: Active Stages (throughput > 0)
   # ---------------------------------------------------------------------------
-  # Shows cumulative time spent in each pipeline stage per VM.
-  # Useful for understanding where time is being spent during sync.
+  # Shows only stages that are actively progressing (non-zero throughput).
+  # This highlights which stage each VM is currently working on.
   # ---------------------------------------------------------------------------
-  v1_time_breakdown_tiles = [
+  v1_active_stages_tiles = [
     {
       xPos   = 0
       yPos   = 0
       width  = 48
       height = 16
       widget = {
-        title = "Time Spent Per Stage (hours)"
-        xyChart = {
-          dataSets = [{
-            timeSeriesQuery = {
-              prometheusQuery = "reth_sync_total_elapsed / 3600"
+        title = "Active Stages (throughput > 0)"
+        timeSeriesTable = {
+          dataSets = [
+            {
+              timeSeriesQuery = {
+                prometheusQuery = "rate(reth_sync_checkpoint{vm_name=~\"op-reth.*\"}[5m]) > 0"
+              }
+              minAlignmentPeriod = "60s"
             }
-            plotType       = "STACKED_AREA"
-            legendTemplate = "{{vm_name}} - {{stage}}"
-          }]
-          yAxis = {
-            label = "Hours"
-          }
+          ]
+          metricVisualization = "NUMBER"
+          columnSettings = [
+            {
+              column      = "vm_name"
+              visible     = true
+              displayName = "VM"
+            },
+            {
+              column      = "stage"
+              visible     = true
+              displayName = "Stage"
+            },
+            {
+              column      = "value"
+              visible     = true
+              displayName = "Throughput (blocks/s)"
+            }
+          ]
         }
       }
     }
   ]
 
   # ---------------------------------------------------------------------------
-  # V1 Row 2: All Stages Breakdown Table
+  # V1 Row 2: All Stages - Checkpoint
   # ---------------------------------------------------------------------------
-  # Shows checkpoint for all pipeline stages per VM.
-  # Provides detailed view of which stage each VM is in.
+  # Shows current checkpoint (block number) for all stages per VM.
   # ---------------------------------------------------------------------------
-  v1_stage_breakdown_tiles = [
+  v1_checkpoint_tiles = [
     {
       xPos   = 0
       yPos   = 16
       width  = 48
-      height = 20
+      height = 24
       widget = {
         title = "All Stages: Checkpoint (block #)"
         timeSeriesTable = {
           dataSets = [
             {
               timeSeriesQuery = {
-                prometheusQuery = "reth_sync_checkpoint"
+                prometheusQuery = "reth_sync_checkpoint{vm_name=~\"op-reth.*\"}"
               }
               minAlignmentPeriod = "60s"
             }
@@ -667,17 +689,146 @@ locals {
       }
     }
   ]
+
+  # ---------------------------------------------------------------------------
+  # V1 Row 3: All Stages - Throughput
+  # ---------------------------------------------------------------------------
+  # Shows throughput (blocks/s) for all stages per VM.
+  # Active stages will have non-zero values.
+  # ---------------------------------------------------------------------------
+  v1_throughput_tiles = [
+    {
+      xPos   = 0
+      yPos   = 40
+      width  = 48
+      height = 24
+      widget = {
+        title = "All Stages: Throughput (blocks/s)"
+        timeSeriesTable = {
+          dataSets = [
+            {
+              timeSeriesQuery = {
+                prometheusQuery = "rate(reth_sync_checkpoint{vm_name=~\"op-reth.*\"}[5m])"
+              }
+              minAlignmentPeriod = "60s"
+            }
+          ]
+          metricVisualization = "NUMBER"
+          columnSettings = [
+            {
+              column      = "vm_name"
+              visible     = true
+              displayName = "VM"
+            },
+            {
+              column      = "stage"
+              visible     = true
+              displayName = "Stage"
+            },
+            {
+              column      = "value"
+              visible     = true
+              displayName = "blocks/s"
+            }
+          ]
+        }
+      }
+    }
+  ]
+
+  # ---------------------------------------------------------------------------
+  # V1 Row 4: All Stages - ETA (hours)
+  # ---------------------------------------------------------------------------
+  # Estimated time to reach L2 tip for each stage.
+  # ETA = (target - checkpoint) / (throughput * 3600)
+  # Uses clamp_min to avoid division by zero (shows large number for 0 throughput).
+  # ---------------------------------------------------------------------------
+  v1_eta_tiles = [
+    {
+      xPos   = 0
+      yPos   = 64
+      width  = 48
+      height = 24
+      widget = {
+        title = "All Stages: ETA (hours)"
+        timeSeriesTable = {
+          dataSets = [
+            {
+              timeSeriesQuery = {
+                # ETA = (L2_tip - checkpoint) / (throughput_per_hour)
+                # Uses group_right to broadcast L2 tip to all stages
+                # clamp_min prevents division by zero (shows large number instead of Inf)
+                prometheusQuery = "(op_node_default_refs_number{layer=\"l2\", type=\"l2_unsafe\", vm_name=~\"op-reth.*\"} - on(vm_name) group_right(stage) reth_sync_checkpoint{vm_name=~\"op-reth.*\"}) / on(vm_name, stage) clamp_min(rate(reth_sync_checkpoint{vm_name=~\"op-reth.*\"}[5m]) * 3600, 0.0001)"
+              }
+              minAlignmentPeriod = "60s"
+            }
+          ]
+          metricVisualization = "NUMBER"
+          columnSettings = [
+            {
+              column      = "vm_name"
+              visible     = true
+              displayName = "VM"
+            },
+            {
+              column      = "stage"
+              visible     = true
+              displayName = "Stage"
+            },
+            {
+              column      = "value"
+              visible     = true
+              displayName = "ETA (hours)"
+            }
+          ]
+        }
+      }
+    }
+  ]
+
+  # ---------------------------------------------------------------------------
+  # V1 Row 5: Checkpoint Progress Chart
+  # ---------------------------------------------------------------------------
+  # Line chart showing checkpoint progression over time per VM/stage.
+  # Useful for visualizing sync progress and identifying slowdowns.
+  # ---------------------------------------------------------------------------
+  v1_progress_chart_tiles = [
+    {
+      xPos   = 0
+      yPos   = 88
+      width  = 48
+      height = 16
+      widget = {
+        title = "Checkpoint Progress Over Time"
+        xyChart = {
+          dataSets = [{
+            timeSeriesQuery = {
+              prometheusQuery = "reth_sync_checkpoint{vm_name=~\"op-reth.*\"}"
+            }
+            plotType       = "LINE"
+            legendTemplate = "{{vm_name}} - {{stage}}"
+          }]
+          yAxis = {
+            label = "Block #"
+          }
+        }
+      }
+    }
+  ]
 }
 
 # -----------------------------------------------------------------------------
-# Dashboard V1 - Detailed Stage Analysis
+# Dashboard V1 - Prometheus-Based Sync Status
 # -----------------------------------------------------------------------------
 # Layout:
-#   Row 1: Time Spent Per Stage (stacked area chart) - yPos=0, height=16
-#   Row 2: All Stages Breakdown Table - yPos=16, height=20
+#   Row 1: Active Stages (throughput > 0)     - yPos=0,  height=16
+#   Row 2: All Stages - Checkpoint            - yPos=16, height=24
+#   Row 3: All Stages - Throughput            - yPos=40, height=24
+#   Row 4: All Stages - ETA                   - yPos=64, height=24
+#   Row 5: Checkpoint Progress Chart          - yPos=88, height=16
 #
-# This dashboard provides detailed stage-level visibility for debugging
-# and deep analysis of sync performance.
+# All data comes from Prometheus metrics (reth_sync_checkpoint, op_node_default_refs_number).
+# No dependency on log-based metrics.
 # -----------------------------------------------------------------------------
 resource "google_monitoring_dashboard" "reth_benchmark_v1" {
   dashboard_json = jsonencode({
@@ -686,8 +837,11 @@ resource "google_monitoring_dashboard" "reth_benchmark_v1" {
     mosaicLayout = {
       columns = 48
       tiles = concat(
-        local.v1_time_breakdown_tiles,
-        local.v1_stage_breakdown_tiles
+        local.v1_active_stages_tiles,
+        local.v1_checkpoint_tiles,
+        local.v1_throughput_tiles,
+        local.v1_eta_tiles,
+        local.v1_progress_chart_tiles
       )
     }
   })
