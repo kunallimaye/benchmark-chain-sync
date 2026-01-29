@@ -9,11 +9,11 @@ User={{ service_user }}
 Group={{ service_group }}
 
 # Disable ANSI colors for clean log parsing (enables log-based metrics)
-Environment="NO_COLOR=1"
-
+# NO_COLOR=1 doesn't work for reth, use --color never instead
 ExecStart={{ op_reth_bin_path }} node \
     --config {{ op_reth_data_dir }}/reth.toml \
     --chain {{ op_reth_chain }} \
+    --color never \
     --datadir {{ op_reth_data_dir }} \
     --http \
     --http.addr 0.0.0.0 \
