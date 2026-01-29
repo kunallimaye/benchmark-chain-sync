@@ -15,15 +15,19 @@ resource "google_project_service" "telemetry" {
 # -----------------------------------------------------------------------------
 # Log-Based Metrics - Extract real-time stage info from op-reth logs
 # -----------------------------------------------------------------------------
-# Note: Requires NO_COLOR=1 in op-reth service for clean log parsing.
+# Note: Requires --color never in op-reth service for clean log parsing.
 # Counts Status log entries per stage, emitted every ~25 seconds.
-# Use rate() to determine which stage is currently active:
-#   topk(1, rate(logging.googleapis.com/user/reth_stage_log_count[5m])) by (vm_name, stage)
+#
+# Log format example:
+#   INFO Status connected_peers=15 stage=MerkleExecute checkpoint=40840749 target=41368260 stage_progress=47.55% stage_eta=3h14m20s
+#
+# Query for active stage with ETA:
+#   {__name__="logging.googleapis.com/user/reth_stage_log_count", vm_name=~"op-reth.*", stage_eta!=""}
 # -----------------------------------------------------------------------------
 resource "google_logging_metric" "reth_stage_log_count" {
   name        = "reth_stage_log_count"
   project     = var.project_id
-  description = "Count of Status log entries per stage from op-reth (use rate to find active stage)"
+  description = "Status log entries from op-reth with stage, checkpoint, target, progress, and ETA"
 
   filter = <<-EOF
     resource.type="gce_instance"
@@ -38,19 +42,43 @@ resource "google_logging_metric" "reth_stage_log_count" {
     labels {
       key         = "stage"
       value_type  = "STRING"
-      description = "Pipeline stage from log"
+      description = "Pipeline stage name"
     }
     labels {
       key         = "vm_name"
       value_type  = "STRING"
-      description = "VM instance name"
+      description = "VM hostname"
+    }
+    labels {
+      key         = "checkpoint"
+      value_type  = "STRING"
+      description = "Current block number for the stage"
+    }
+    labels {
+      key         = "target"
+      value_type  = "STRING"
+      description = "Target block number"
+    }
+    labels {
+      key         = "stage_progress"
+      value_type  = "STRING"
+      description = "Stage progress percentage (empty if not available)"
+    }
+    labels {
+      key         = "stage_eta"
+      value_type  = "STRING"
+      description = "Estimated time remaining for stage (empty if not available)"
     }
   }
 
   label_extractors = {
-    "stage"   = "REGEXP_EXTRACT(textPayload, \"stage=(\\\\w+)\")"
     # Extract VM hostname from syslog prefix: "<timestamp>+00:00 <hostname> op-reth[pid]:"
-    "vm_name" = "REGEXP_EXTRACT(textPayload, \"\\\\+00:00 ([\\\\w-]+) op-reth\")"
+    "vm_name"        = "REGEXP_EXTRACT(textPayload, \"\\\\+00:00 ([\\\\w-]+) op-reth\")"
+    "stage"          = "REGEXP_EXTRACT(textPayload, \"stage=(\\\\w+)\")"
+    "checkpoint"     = "REGEXP_EXTRACT(textPayload, \"checkpoint=(\\\\d+)\")"
+    "target"         = "REGEXP_EXTRACT(textPayload, \"target=(\\\\d+)\")"
+    "stage_progress" = "REGEXP_EXTRACT(textPayload, \"stage_progress=([\\\\d.]+)\")"
+    "stage_eta"      = "REGEXP_EXTRACT(textPayload, \"stage_eta=([\\\\dhms]+)\")"
   }
 }
 
