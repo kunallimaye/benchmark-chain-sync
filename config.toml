@@ -151,10 +151,16 @@ etl_file_size = 524288000                   # File size before flush (reth defau
 # Pre-extracted snapshot for fast VM provisioning. Created from a synced VM.
 # New VMs create their data disk from this snapshot (~10-15 min).
 # For LSSD machines, the snapshot is copied to local NVMe via rsync.
+#
+# Available snapshots:
+#   - op-reth-golden-2026-01-28-23-14: Archive snapshot (~5TB, full history)
+#   - op-reth-pruned-2026-01-31: Pruned snapshot (~1.4TB, distance=50000)
+#
+# Use pruned snapshot with node_mode="full" for faster benchmarks.
 # =============================================================================
 [snapshot]
-name = "op-reth-golden-2026-01-28-23-14"
-disk_size_gb = 15000  # Must be >= snapshot source disk size (15TB)
+name = "op-reth-pruned-2026-01-31"
+disk_size_gb = 3000  # Pruned snapshot is smaller (3TB disk)
 
 # =============================================================================
 # ORPHANED VMs (NOT in Terraform state - manage via gcloud CLI)
