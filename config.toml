@@ -9,7 +9,7 @@
 project_id = "bct-prod-c3-tdx-3"
 region = "us-central1"
 zone = "us-central1-a"
-network = "base-mainnet"
+network = "default"
 gcs_bucket = "base-mainnet-snapshot"
 
 [l1]
@@ -71,18 +71,36 @@ engine_workers = 44              # Set to vCPU count (c3-standard-44 = 44 vCPUs)
 # Add new VM definitions here when ready to provision.
 # -----------------------------------------------------------------------------
 
-# Example VM configurations (uncomment to use):
+[[vm]]
+name = "op-reth-c3-standard-44-lssd-notdx"
+machine_type = "c3-standard-44-lssd"
+confidential_compute = false
+engine_cache_mb = 65536              # 64GB cache (176GB RAM available)
+engine_workers = 44                  # Match vCPU count
+
+[[vm]]
+name = "op-reth-c3-standard-44-lssd-tdx"
+machine_type = "c3-standard-44-lssd"
+confidential_compute = true
+engine_cache_mb = 65536              # 64GB cache (176GB RAM available)
+engine_workers = 44                  # Match vCPU count
+
+# =============================================================================
+# Golden Snapshot Configuration
+# =============================================================================
+# Pre-extracted snapshot for fast VM provisioning. Created from a synced VM.
+# New VMs create their data disk from this snapshot (~10-15 min).
+# For LSSD machines, the snapshot is copied to local NVMe via rsync.
 #
-# [[vm]]
-# name = "op-reth-c3-standard-44-pd-balanced"
-# confidential_compute = false
+# Available snapshots:
+#   - op-reth-golden-2026-01-28-23-14: Archive snapshot (~5TB, full history)
+#   - op-reth-pruned-2026-01-31: Pruned snapshot (~1.4TB, distance=50000)
 #
-# [[vm]]
-# name = "op-reth-c4-standard-192-lssd"
-# machine_type = "c4-standard-192-lssd"
-# confidential_compute = false
-# engine_cache_mb = 65536
-# engine_workers = 192
+# Use pruned snapshot with node_mode="full" for faster benchmarks.
+# =============================================================================
+[snapshot]
+name = "op-reth-pruned-2026-01-31"
+disk_size_gb = 3000  # Pruned snapshot is smaller (3TB disk)
 
 # =============================================================================
 # Reth Configuration (Performance Tuning)
@@ -134,22 +152,5 @@ prune_commit_threshold = 1000000            # Entries per commit (reth default: 
 
 # ETL (Extract, Transform, Load) settings
 etl_file_size = 524288000                   # File size before flush (reth default: 500MB)
-
-# =============================================================================
-# Golden Snapshot Configuration
-# =============================================================================
-# Pre-extracted snapshot for fast VM provisioning. Created from a synced VM.
-# New VMs create their data disk from this snapshot (~10-15 min).
-# For LSSD machines, the snapshot is copied to local NVMe via rsync.
-#
-# Available snapshots:
-#   - op-reth-golden-2026-01-28-23-14: Archive snapshot (~5TB, full history)
-#   - op-reth-pruned-2026-01-31: Pruned snapshot (~1.4TB, distance=50000)
-#
-# Use pruned snapshot with node_mode="full" for faster benchmarks.
-# =============================================================================
-[snapshot]
-name = "op-reth-pruned-2026-01-31"
-disk_size_gb = 3000  # Pruned snapshot is smaller (3TB disk)
 
 

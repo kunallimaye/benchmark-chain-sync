@@ -13,17 +13,18 @@
 # =============================================================================
 
 - name: Check if data already exists on LSSD
-  stat:
-    path: "{{ mount_point }}/op-reth/db/mdbx.dat"
+  shell: test -f "{{ mount_point }}/op-reth/db/mdbx.dat"
   register: lssd_db_exists
+  failed_when: false
+  changed_when: false
 
 - name: Skip copy if data already exists
   debug:
     msg: "Database already exists on LSSD - skipping copy"
-  when: lssd_db_exists.stat.exists
+  when: lssd_db_exists.rc == 0
 
 - name: Copy data from snapshot disk to LSSD
-  when: not lssd_db_exists.stat.exists
+  when: lssd_db_exists.rc != 0
   block:
     - name: Wait for snapshot disk device
       wait_for:
@@ -80,11 +81,11 @@
       register: dd_job
 
     # Copy all other files with tar (foreground)
-    # tar preserves ownership when run as root (--same-owner default)
+    # --no-same-owner: extract as root (service runs as reth user via systemd)
     - name: Copy remaining files using tar
       shell: |
         cd {{ snapshot_mount_point }} && \
-        tar --exclude='op-reth/db/mdbx.dat' -cf - . | (cd {{ mount_point }} && tar xf -)
+        tar --exclude='op-reth/db/mdbx.dat' -cf - . | (cd {{ mount_point }} && tar xf - --no-same-owner)
       async: 7200  # 2 hour timeout
       poll: 30
 
@@ -116,9 +117,10 @@
         state: absent
 
 - name: Verify data on LSSD
-  stat:
-    path: "{{ mount_point }}/op-reth/db/mdbx.dat"
+  shell: test -f "{{ mount_point }}/op-reth/db/mdbx.dat"
   register: final_db_check
+  failed_when: false
+  changed_when: false
 
 - name: Display final status
   debug:
@@ -126,6 +128,6 @@
       ============================================================
       LSSD COPY COMPLETE
       ============================================================
-      Database exists: {{ final_db_check.stat.exists }}
+      Database exists: {{ final_db_check.rc == 0 }}
       Location: {{ mount_point }}/op-reth/db/
       ============================================================
