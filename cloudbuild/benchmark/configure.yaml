@@ -72,7 +72,7 @@ steps:
         with open('/workspace/zone.txt', 'w') as f:
             f.write(project.get('zone', ''))
         with open('/workspace/lssd_vms.json', 'w') as f:
-            json.dump([vm.get('name') for vm in lssd_vms], f)
+            json.dump([{'name': vm.get('name'), 'machine_type': vm.get('machine_type', '')} for vm in lssd_vms], f)
 
   # ---------------------------------------------------------------------------
   # Download inventory from GCS
@@ -120,9 +120,17 @@ steps:
 
         lssd_vms = json.loads('$$LSSD_VMS')
         
-        for vm_name in lssd_vms:
+        for vm in lssd_vms:
+            vm_name = vm['name']
+            machine_type = vm.get('machine_type', '')
             temp_disk_name = f'{vm_name}-snapshot-temp'
-            print(f'Creating temp disk: {temp_disk_name}')
+            
+            # C4 machines require hyperdisk-balanced, C3 and others can use pd-balanced
+            # LSSD machines have built-in local SSDs for data; this temp disk is just
+            # for rsync'ing the snapshot data to the local SSDs
+            disk_type = 'hyperdisk-balanced' if machine_type.startswith('c4-') else 'pd-balanced'
+            
+            print(f'Creating temp disk: {temp_disk_name} (type: {disk_type})')
             
             # Check if disk already exists
             result = subprocess.run([
@@ -137,7 +145,7 @@ steps:
                 subprocess.run([
                     'gcloud', 'compute', 'disks', 'create', temp_disk_name,
                     '--source-snapshot=$$SNAPSHOT_NAME',
-                    '--type=pd-balanced',
+                    f'--type={disk_type}',
                     '--size=$${SNAPSHOT_DISK_SIZE}GB',
                     '--zone=$$ZONE',
                     '--project=$$PROJECT_ID'
@@ -145,12 +153,13 @@ steps:
                 print(f'  Created temp disk: {temp_disk_name}')
             
             # Attach disk to VM
+            # Note: hyperdisk-balanced doesn't support read-only mode, so we attach in rw mode
+            # The rsync will only read from it, and we delete it after anyway
             print(f'Attaching temp disk to {vm_name}')
             result = subprocess.run([
                 'gcloud', 'compute', 'instances', 'attach-disk', vm_name,
                 '--disk=' + temp_disk_name,
                 '--device-name=snapshot-disk',
-                '--mode=ro',
                 '--zone=$$ZONE',
                 '--project=$$PROJECT_ID'
             ], capture_output=True)
@@ -176,6 +185,16 @@ steps:
         set -e
         
         echo "=== Setting up SSH keys for OS Login ==="
+        
+        # Clean up old SSH keys to avoid profile size limit (32 KiB)
+        echo "Cleaning up old SSH keys..."
+        OLD_KEYS=$$(gcloud compute os-login describe-profile --format=json 2>/dev/null | \
+          python3 -c "import sys,json; d=json.load(sys.stdin); keys=d.get('sshPublicKeys',{}); print(' '.join(list(keys.keys())[:-3]) if len(keys)>3 else '')" 2>/dev/null || echo "")
+        
+        for KEY_FP in $$OLD_KEYS; do
+          echo "  Removing old key: $$KEY_FP"
+          gcloud compute os-login ssh-keys remove --key=$$KEY_FP 2>/dev/null || true
+        done
         
         # Generate SSH key pair if not exists
         mkdir -p /root/.ssh
@@ -270,7 +289,8 @@ steps:
 
         lssd_vms = json.loads('$$LSSD_VMS')
         
-        for vm_name in lssd_vms:
+        for vm in lssd_vms:
+            vm_name = vm['name'] if isinstance(vm, dict) else vm
             temp_disk_name = f'{vm_name}-snapshot-temp'
             
             # Detach disk from VM

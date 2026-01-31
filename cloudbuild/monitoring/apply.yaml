@@ -1,0 +1,86 @@
+# =============================================================================
+# Apply Monitoring Infrastructure
+# =============================================================================
+# Creates/updates monitoring infrastructure:
+#   - Cloud Monitoring Dashboards (overview, v1, v3)
+#   - Log-based Metrics for reth stage tracking
+#   - Telemetry API enablement
+#
+# Usage:
+#   gcloud builds submit . \
+#     --config=cloudbuild/monitoring/apply.yaml
+#
+# =============================================================================
+
+steps:
+  # ---------------------------------------------------------------------------
+  # Parse config.toml for project settings
+  # ---------------------------------------------------------------------------
+  - id: 'parse-config'
+    name: 'python:3.12-slim'
+    entrypoint: 'python3'
+    args:
+      - '-c'
+      - |
+        import tomllib
+
+        with open('config.toml', 'rb') as f:
+            config = tomllib.load(f)
+
+        project = config.get('project', {})
+        
+        print("=== Monitoring Configuration ===")
+        print(f"Project: {project.get('project_id')}")
+
+        with open('/workspace/project_id.txt', 'w') as f:
+            f.write(project.get('project_id', ''))
+
+  # ---------------------------------------------------------------------------
+  # Terraform Init
+  # ---------------------------------------------------------------------------
+  - id: 'terraform-init'
+    name: 'hashicorp/terraform:1.9'
+    dir: 'terraform/monitoring'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        terraform init -input=false
+
+  # ---------------------------------------------------------------------------
+  # Terraform Plan/Apply
+  # ---------------------------------------------------------------------------
+  - id: 'terraform-apply'
+    name: 'hashicorp/terraform:1.9'
+    dir: 'terraform/monitoring'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        set -e
+        
+        PROJECT_ID=$$(cat /workspace/project_id.txt)
+        
+        if [ "${_PLAN_ONLY}" = "true" ]; then
+          echo "=== Terraform Plan (dry-run) ==="
+          terraform plan \
+            -var="project_id=$$PROJECT_ID"
+        else
+          echo "=== Applying Monitoring ==="
+          terraform apply -auto-approve \
+            -var="project_id=$$PROJECT_ID"
+          
+          echo ""
+          echo "=== Dashboard URLs ==="
+          terraform output
+        fi
+
+substitutions:
+  _PLAN_ONLY: ''  # Set to 'true' for dry-run
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+tags: ['monitoring', 'apply']
+
+timeout: '300s'

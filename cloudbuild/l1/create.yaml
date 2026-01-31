@@ -1,0 +1,141 @@
+# =============================================================================
+# Create L1 Infrastructure (BNE)
+# =============================================================================
+# Creates a Blockchain Node Engine (BNE) node for L1 Ethereum access.
+# Uses the new modular terraform structure at terraform/l1/
+#
+# WARNING: BNE nodes take several days to fully sync!
+# This only needs to be run once per L1 network.
+#
+# After creation, you must:
+# 1. Create an API key in GCP Console (APIs & Services → Credentials)
+# 2. Note the endpoints from terraform output
+# 3. Update config.toml with the endpoints
+#
+# Usage:
+#   gcloud builds submit . \
+#     --config=cloudbuild/l1/create.yaml
+#
+# =============================================================================
+
+steps:
+  # ---------------------------------------------------------------------------
+  # Parse config.toml for project settings
+  # ---------------------------------------------------------------------------
+  - id: 'parse-config'
+    name: 'python:3.12-slim'
+    entrypoint: 'python3'
+    args:
+      - '-c'
+      - |
+        import tomllib
+
+        with open('config.toml', 'rb') as f:
+            config = tomllib.load(f)
+
+        project = config.get('project', {})
+        l1 = config.get('l1', {})
+        
+        print("=== L1 Configuration ===")
+        print(f"Project: {project.get('project_id')}")
+        print(f"Region: {project.get('region')}")
+        print(f"L1 Network: MAINNET")
+
+        with open('/workspace/project_id.txt', 'w') as f:
+            f.write(project.get('project_id', ''))
+        with open('/workspace/region.txt', 'w') as f:
+            f.write(project.get('region', 'us-central1'))
+
+  # ---------------------------------------------------------------------------
+  # Terraform Init
+  # ---------------------------------------------------------------------------
+  - id: 'terraform-init'
+    name: 'hashicorp/terraform:1.9'
+    dir: 'terraform/l1'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        terraform init -input=false
+
+  # ---------------------------------------------------------------------------
+  # Terraform Apply (BNE)
+  # ---------------------------------------------------------------------------
+  - id: 'terraform-apply'
+    name: 'hashicorp/terraform:1.9'
+    dir: 'terraform/l1'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        set -e
+        
+        PROJECT_ID=$$(cat /workspace/project_id.txt)
+        REGION=$$(cat /workspace/region.txt)
+        
+        echo "=== Creating L1 Infrastructure (BNE) ==="
+        echo "Project: $$PROJECT_ID"
+        echo "Region: $$REGION"
+        echo ""
+        echo "WARNING: BNE nodes take several days to sync!"
+        echo ""
+        
+        if [ "${_PLAN_ONLY}" = "true" ]; then
+          terraform plan \
+            -var="project_id=$$PROJECT_ID" \
+            -var="region=$$REGION" \
+            -var="l1_network=MAINNET"
+        else
+          terraform apply -auto-approve \
+            -var="project_id=$$PROJECT_ID" \
+            -var="region=$$REGION" \
+            -var="l1_network=MAINNET"
+          
+          echo ""
+          echo "=== L1 Infrastructure Created ==="
+          terraform output
+        fi
+
+  # ---------------------------------------------------------------------------
+  # Show BNE Status and Endpoints
+  # ---------------------------------------------------------------------------
+  - id: 'show-status'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+        
+        if [ "${_PLAN_ONLY}" = "true" ]; then
+          echo "=== Plan mode - skipping status check ==="
+          exit 0
+        fi
+        
+        PROJECT_ID=$$(cat /workspace/project_id.txt)
+        REGION=$$(cat /workspace/region.txt)
+        
+        echo "=== BNE Node Status ==="
+        gcloud alpha blockchain-node-engine nodes describe "l1-mainnet" \
+          --location="$$REGION" \
+          --project="$$PROJECT_ID" \
+          --format="yaml(name,state,ethereumDetails.network,ethereumDetails.nodeType,connectionInfo.endpointInfo,ethereumDetails.additionalEndpoints)" \
+          2>/dev/null || echo "Note: BNE CLI not available. Check console for status."
+        
+        echo ""
+        echo "=== Next Steps ==="
+        echo "1. Wait for BNE to sync (check status in Cloud Console)"
+        echo "2. Create an API key: GCP Console → APIs & Services → Credentials → Create API Key"
+        echo "3. Update config.toml with endpoints and add API key to .env"
+        echo "4. Run: make build-reth"
+        echo "5. Run: make provision"
+
+substitutions:
+  _PLAN_ONLY: ''  # Set to 'true' for dry-run
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+tags: ['l1', 'create']
+
+timeout: '7200s'  # 2 hours (BNE creation can take a while)

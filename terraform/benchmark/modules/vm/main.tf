@@ -1,5 +1,5 @@
 # =============================================================================
-# Benchmark Module - VM + Disk for a single benchmark instance
+# Benchmark VM Module - VM + Disk for a single benchmark instance
 # =============================================================================
 
 # Get the latest image from the specified family
@@ -249,7 +249,7 @@ resource "google_compute_instance" "vm" {
   }
 
   network_interface {
-    network = "default"
+    network = var.network
     access_config {
       # Ephemeral external IP
     }

@@ -47,6 +47,14 @@ make build-status TYPE=<type> # Show status of any build type
 # Cleanup
 make cleanup                  # Destroy all VMs
 make cleanup VM=<name>        # Destroy specific VM
+
+# SSH to VMs (required format for this project)
+gcloud compute ssh INSTANCE_NAME --project=PROJECT_ID --zone=ZONE -- \
+  -o Hostname=nic0.INSTANCE_NAME.ZONE.c.PROJECT_ID.internal.gcpnode.com
+
+# Example:
+gcloud compute ssh c4-standard-192-lssd-no-tdx --project=bct-prod-c3-tdx-3 --zone=us-central1-a -- \
+  -o Hostname=nic0.c4-standard-192-lssd-no-tdx.us-central1-a.c.bct-prod-c3-tdx-3.internal.gcpnode.com
 ```
 
 ## Configuration Files
@@ -381,7 +389,8 @@ See `docs/ETA-CALC.md` for comprehensive guide on:
 ├── README.md                # User-facing documentation
 ├── docs/
 │   ├── PERFORMANCE-TUNING.md        # Comprehensive performance tuning guide
-│   └── ETA-CALC.md                  # ETA calculation for sync stages
+│   ├── ETA-CALC.md                  # ETA calculation for sync stages
+│   └── PRUNE-RETH-NODE.md           # Pruning archive node for quick benchmarks
 ├── terraform/
 │   ├── main.tf              # Root module
 │   ├── variables.tf         # Input variables

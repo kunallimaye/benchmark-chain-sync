@@ -1,0 +1,10 @@
+[
+  {
+    "name": "example-vm",
+    "zone": "us-central1-a",
+    "machine_type": "c3-standard-44",
+    "storage_type": "pd-balanced",
+    "disk_size_gb": 12000,
+    "confidential_compute": false
+  }
+]

@@ -90,6 +90,96 @@ For a 525K block batch:
 
 ---
 
+## Dashboard Metric Selection by Stage
+
+For building dashboards, each stage requires different metric sources based on update frequency. Prometheus metrics (`reth_sync_checkpoint`) only update when a stage commits, which can take hours for long-running stages. Log-based metrics provide real-time visibility.
+
+### Log-Based Metric: `reth_stage_log_count`
+
+We have a custom log-based metric that extracts fields from op-reth status logs:
+
+```
+INFO Status connected_peers=29 stage=MerkleExecute checkpoint=40840749 target=41365935 stage_progress=16.93% stage_eta=12h32m27s
+```
+
+| Label | Description | Availability |
+|-------|-------------|--------------|
+| `vm_name` | VM hostname | All stages |
+| `stage` | Current pipeline stage | All stages |
+| `checkpoint` | Current block number | All stages |
+| `target` | Target block number | All stages |
+| `stage_progress` | Progress percentage (e.g., "16.93") | Execution, MerkleExecute only |
+| `stage_eta` | Time remaining (e.g., "12h32m27s") | **MerkleExecute only** |
+
+### Log Field Availability by Stage
+
+Based on actual log analysis:
+
+| Stage | `checkpoint` | `target` | `stage_progress` | `stage_eta` |
+|-------|--------------|----------|------------------|-------------|
+| Headers | Yes | Yes | No | No |
+| Bodies | Yes | Yes | No | No |
+| SenderRecovery | Yes | Yes | No | No |
+| **Execution** | Yes | Yes | **Yes** | No |
+| AccountHashing | Yes | Yes | No | No |
+| **StorageHashing** | Yes | Yes | No | No |
+| **MerkleExecute** | Yes | Yes | **Yes** | **Yes** |
+| TransactionLookup | Yes | Yes | No | No |
+| IndexStorageHistory | Yes | Yes | No | No |
+| IndexAccountHistory | Yes | Yes | No | No |
+| Prune | Yes | Yes | No | No |
+| Finish | Yes | Yes | No | No |
+
+**Key Insight:** Only **MerkleExecute** provides both `stage_progress` and `stage_eta` in logs.
+
+### Prometheus Entity Availability by Stage
+
+Not all stages have meaningful `reth_sync_entities_total` values:
+
+| Stage | `entities_total` > 0? | Entity Type |
+|-------|----------------------|-------------|
+| Headers | Yes | blocks |
+| Bodies | Yes | blocks |
+| SenderRecovery | Yes | transactions |
+| Execution | Yes | gas |
+| AccountHashing | Yes | accounts |
+| **StorageHashing** | **No** | - |
+| **MerkleExecute** | **No** | - |
+| **TransactionLookup** | **No** | - |
+| IndexStorageHistory | **No** | - |
+| IndexAccountHistory | **No** | - |
+| Prune | **No** | - |
+| Finish | **No** | - |
+
+### Recommended Metric Source per Stage
+
+| Stage | Throughput | Checkpoint | ETA Calculation |
+|-------|------------|------------|-----------------|
+| **01-Headers** | Prometheus `rate(reth_sync_checkpoint{stage="Headers"}[5m])` | Prometheus `reth_sync_checkpoint` | Block-based: `(L2_tip - ckpt) / rate / 3600` |
+| **02-Bodies** | Prometheus `rate(reth_sync_checkpoint{stage="Bodies"}[5m])` | Prometheus `reth_sync_checkpoint` | Block-based |
+| **03-SenderRecovery** | Prometheus `rate(reth_sync_checkpoint{stage="SenderRecovery"}[5m])` | Prometheus `reth_sync_checkpoint` | Block-based |
+| **04-Execution** | Prometheus `rate(reth_sync_checkpoint{stage="Execution"}[5m])` | Prometheus `reth_sync_checkpoint` | Block-based: `(L2_tip - ckpt) / rate / 3600` |
+| **05-AccountHashing** | Prometheus `rate(reth_sync_entities_processed{stage="AccountHashing"}[5m])` | Prometheus `reth_sync_checkpoint` | Entity-based: `(total - processed) / rate / 3600` |
+| **06-StorageHashing** | Prometheus (0 until done) | **Log-based** `checkpoint` label | Historical rate: `(Execution_ckpt - ckpt) / 21 / 3600` |
+| **07-MerkleExecute** | Prometheus (0 until done) | **Log-based** `checkpoint` label | **Log-based** `stage_eta` label |
+| **08-TransactionLookup** | Prometheus `rate(reth_sync_checkpoint{stage="TransactionLookup"}[5m])` | Prometheus `reth_sync_checkpoint` | Block-based |
+| **09-IndexStorageHistory** | Prometheus `rate(reth_sync_checkpoint{stage="IndexStorageHistory"}[5m])` | Prometheus `reth_sync_checkpoint` | Block-based |
+| **10-IndexAccountHistory** | Prometheus `rate(reth_sync_checkpoint{stage="IndexAccountHistory"}[5m])` | Prometheus `reth_sync_checkpoint` | Block-based |
+| **11-Prune** | Prometheus `rate(reth_sync_checkpoint{stage="Prune"}[5m])` | Prometheus `reth_sync_checkpoint` | Block-based |
+| **12-Finish** | Prometheus `rate(reth_sync_checkpoint{stage="Finish"}[5m])` | Prometheus `reth_sync_checkpoint` | Block-based |
+
+### Dashboard Implementation Notes
+
+1. **StorageHashing**: Use log-based `checkpoint` for real-time visibility (~25s updates). For ETA, use historical rate of ~21 blocks/s.
+
+2. **MerkleExecute**: Use log-based `checkpoint` for checkpoint, and `stage_eta` label for ETA (the only stage with native ETA in logs).
+
+3. **Log-based metrics are DELTA counters**: The metric counts log entries. Labels like `checkpoint`, `stage_eta` are STRING values that can be displayed in table columns but cannot be used in arithmetic.
+
+4. **VM filter pattern**: Use `vm_name=~"op-reth.*|c4-.*"` to match both naming conventions.
+
+---
+
 ## ETA Calculation Methods
 
 ### Method 1: Rate-Based (for active stages)
@@ -400,12 +490,12 @@ stage=(\w+).*checkpoint=(\d+).*target=(\d+)
 - Log-based metrics are counters/distributions, not gauges (need workarounds for latest value)
 - Alternative: Use Log Analytics SQL queries directly in dashboard
 
-#### Status: NOT IMPLEMENTED
+#### Status: IMPLEMENTED
 
-Prerequisites:
-- [ ] Disable ANSI colors in op-reth logs
-- [ ] Create log-based metrics in `terraform/modules/monitoring/`
-- [ ] Update dashboard with new widgets
+- [x] Log-based metric `reth_stage_log_count` created in `terraform/modules/monitoring/main.tf`
+- [x] Labels extracted: `vm_name`, `stage`, `checkpoint`, `target`, `stage_progress`, `stage_eta`
+- [x] Works without disabling ANSI colors (regex handles both formats)
+- [ ] Dashboard v3 with per-stage breakdown (in progress)
 
 ---
 

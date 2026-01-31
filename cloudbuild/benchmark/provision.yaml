@@ -1,0 +1,282 @@
+# =============================================================================
+# Provision Benchmark VMs (Terraform Only)
+# =============================================================================
+# Creates/updates benchmark VM(s) from config.toml.
+# Uses the new modular terraform structure at terraform/benchmark/
+#
+# Prerequisites:
+#   - Foundation must be applied (terraform/foundation/)
+#   - Golden snapshot must exist (run: make create-snapshot)
+#
+# Usage:
+#   gcloud builds submit . \
+#     --config=cloudbuild/benchmark/provision.yaml \
+#     --substitutions=_VM=op-reth-baseline
+#
+# =============================================================================
+
+steps:
+  # ---------------------------------------------------------------------------
+  # Convert config.toml to JSON and generate vms.json for Terraform
+  # ---------------------------------------------------------------------------
+  - id: 'parse-config'
+    name: 'python:3.12-slim'
+    entrypoint: 'python3'
+    args:
+      - '-c'
+      - |
+        import tomllib
+        import json
+        import sys
+
+        # Load config.toml
+        with open('config.toml', 'rb') as f:
+            config = tomllib.load(f)
+
+        # Get defaults for VM, tracing, and reth config
+        defaults = config.get('defaults', {}).get('vm', {})
+        tracing = config.get('tracing', {})
+        snapshot = config.get('snapshot', {})
+        reth_config = config.get('reth_config', {})
+        project = config.get('project', {})
+
+        # Merge defaults into each VM
+        vms = config.get('vm', [])
+        for vm in vms:
+            # Check if this is an LSSD machine type
+            machine_type = vm.get('machine_type', defaults.get('machine_type', ''))
+            is_lssd = machine_type.endswith('-lssd')
+            
+            for key, value in defaults.items():
+                if key not in vm:
+                    # Don't apply storage_type or disk_size_gb defaults for LSSD machines
+                    if is_lssd and key in ('storage_type', 'disk_size_gb'):
+                        continue
+                    vm[key] = value
+
+        # Filter to specific VM if _VM is set
+        vm_filter = '${_VM}'
+        if vm_filter:
+            vms = [vm for vm in vms if vm.get('name') == vm_filter]
+            if not vms:
+                print(f"ERROR: VM '{vm_filter}' not found in config.toml", file=sys.stderr)
+                sys.exit(1)
+
+        # Validate snapshot config
+        if not snapshot.get('name'):
+            print("ERROR: [snapshot] name is required in config.toml", file=sys.stderr)
+            print("Create a golden snapshot first: make create-snapshot VM=<vm-name>", file=sys.stderr)
+            sys.exit(1)
+
+        print("=== Parsed config.toml ===")
+        print(f"Project: {project.get('project_id')}")
+        print(f"Golden snapshot: {snapshot.get('name')}")
+        print(f"VMs to provision: {[vm.get('name') for vm in vms]}")
+        print("")
+        for vm in vms:
+            machine_type = vm.get('machine_type')
+            storage_type = vm.get('storage_type')
+            is_lssd = machine_type and machine_type.endswith('-lssd')
+            confidential = vm.get('confidential_compute', True)
+            print(f"  {vm.get('name')}:")
+            print(f"    machine_type: {machine_type}")
+            print(f"    storage_type: {storage_type or 'lssd (built-in)'}")
+            print(f"    confidential_compute: {confidential}")
+            if storage_type and storage_type.startswith('hyperdisk'):
+                print(f"    provisioned_iops: {vm.get('provisioned_iops')}")
+                print(f"    provisioned_throughput: {vm.get('provisioned_throughput')}")
+            if not is_lssd and storage_type:
+                print(f"    disk_size_gb: {vm.get('disk_size_gb')}")
+            print(f"    reth_version: {vm.get('reth_version')}")
+
+        # Write vms.json for Terraform benchmark module
+        vms_config = []
+        for vm in vms:
+            vms_config.append({
+                'name': vm.get('name'),
+                'zone': vm.get('zone', project.get('zone')),
+                'machine_type': vm.get('machine_type'),
+                'storage_type': vm.get('storage_type'),
+                'disk_size_gb': vm.get('disk_size_gb', 15000),
+                'provisioned_iops': vm.get('provisioned_iops'),
+                'provisioned_throughput': vm.get('provisioned_throughput'),
+                'confidential_compute': vm.get('confidential_compute', False),
+            })
+        
+        with open('terraform/benchmark/vms.json', 'w') as f:
+            json.dump(vms_config, f, indent=2)
+        
+        print("\n=== Generated terraform/benchmark/vms.json ===")
+
+        # Write individual values for subsequent steps
+        with open('/workspace/project_id.txt', 'w') as f:
+            f.write(project.get('project_id', ''))
+        with open('/workspace/region.txt', 'w') as f:
+            f.write(project.get('region', 'us-central1'))
+        with open('/workspace/network.txt', 'w') as f:
+            f.write(project.get('network', 'default'))
+        with open('/workspace/snapshot_name.txt', 'w') as f:
+            f.write(snapshot.get('name', ''))
+        with open('/workspace/snapshot_disk_size_gb.txt', 'w') as f:
+            f.write(str(snapshot.get('disk_size_gb', 12000)))
+        with open('/workspace/reth_version.txt', 'w') as f:
+            # Use first VM's reth_version or default
+            f.write(vms[0].get('reth_version', 'main') if vms else 'main')
+
+        # Store full config for reference
+        config['vm'] = vms
+        with open('/workspace/config.json', 'w') as f:
+            json.dump(config, f, indent=2)
+
+  # ---------------------------------------------------------------------------
+  # Verify golden snapshot exists
+  # ---------------------------------------------------------------------------
+  - id: 'verify-snapshot'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+        
+        PROJECT_ID=$$(cat /workspace/project_id.txt)
+        SNAPSHOT_NAME=$$(cat /workspace/snapshot_name.txt)
+        
+        echo "Verifying golden snapshot: $$SNAPSHOT_NAME"
+        
+        if gcloud compute snapshots describe "$$SNAPSHOT_NAME" --project="$$PROJECT_ID" &>/dev/null; then
+          STATUS=$$(gcloud compute snapshots describe "$$SNAPSHOT_NAME" --project="$$PROJECT_ID" --format="value(status)")
+          echo "Snapshot found, status: $$STATUS"
+          if [ "$$STATUS" != "READY" ]; then
+            echo "ERROR: Snapshot is not ready (status: $$STATUS)"
+            exit 1
+          fi
+        else
+          echo "ERROR: Golden snapshot '$$SNAPSHOT_NAME' not found."
+          echo "Create one first: make create-snapshot VM=<vm-name>"
+          exit 1
+        fi
+
+  # ---------------------------------------------------------------------------
+  # Get service account email from foundation state
+  # ---------------------------------------------------------------------------
+  - id: 'get-foundation-outputs'
+    name: 'hashicorp/terraform:1.9'
+    dir: 'terraform/foundation'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        terraform init -input=false
+        terraform output -raw service_account_email > /workspace/service_account_email.txt || echo ""
+        echo "Service account: $$(cat /workspace/service_account_email.txt)"
+
+  # ---------------------------------------------------------------------------
+  # Terraform Init for benchmark module
+  # ---------------------------------------------------------------------------
+  - id: 'terraform-init'
+    name: 'hashicorp/terraform:1.9'
+    dir: 'terraform/benchmark'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        terraform init -input=false
+
+  # ---------------------------------------------------------------------------
+  # Terraform Plan/Apply
+  # ---------------------------------------------------------------------------
+  - id: 'terraform-apply'
+    name: 'hashicorp/terraform:1.9'
+    dir: 'terraform/benchmark'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        set -e
+        
+        # Read config values
+        PROJECT_ID=$$(cat /workspace/project_id.txt)
+        REGION=$$(cat /workspace/region.txt)
+        NETWORK=$$(cat /workspace/network.txt)
+        SNAPSHOT_NAME=$$(cat /workspace/snapshot_name.txt)
+        SNAPSHOT_DISK_SIZE_GB=$$(cat /workspace/snapshot_disk_size_gb.txt)
+        RETH_VERSION=$$(cat /workspace/reth_version.txt)
+        SERVICE_ACCOUNT=$$(cat /workspace/service_account_email.txt)
+        
+        # If no service account from foundation, use default compute SA
+        if [ -z "$$SERVICE_ACCOUNT" ]; then
+          PROJECT_NUMBER=$$(gcloud projects describe $$PROJECT_ID --format="value(projectNumber)")
+          SERVICE_ACCOUNT="$${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+          echo "Using default compute service account: $$SERVICE_ACCOUNT"
+        fi
+        
+        if [ "${_PLAN_ONLY}" = "true" ]; then
+          echo "=== Terraform Plan (dry-run) ==="
+          terraform plan \
+            -var="project_id=$$PROJECT_ID" \
+            -var="region=$$REGION" \
+            -var="network=$$NETWORK" \
+            -var="snapshot_name=$$SNAPSHOT_NAME" \
+            -var="snapshot_disk_size_gb=$$SNAPSHOT_DISK_SIZE_GB" \
+            -var="reth_version=$$RETH_VERSION" \
+            -var="service_account_email=$$SERVICE_ACCOUNT"
+          echo ""
+          echo "=== Plan complete (no changes applied) ==="
+        else
+          echo "=== Applying Terraform ==="
+          terraform apply -auto-approve \
+            -var="project_id=$$PROJECT_ID" \
+            -var="region=$$REGION" \
+            -var="network=$$NETWORK" \
+            -var="snapshot_name=$$SNAPSHOT_NAME" \
+            -var="snapshot_disk_size_gb=$$SNAPSHOT_DISK_SIZE_GB" \
+            -var="reth_version=$$RETH_VERSION" \
+            -var="service_account_email=$$SERVICE_ACCOUNT"
+          
+          echo ""
+          echo "=== Terraform Outputs ==="
+          terraform output -json
+        fi
+
+  # ---------------------------------------------------------------------------
+  # Upload config to GCS for reference (skip in plan-only mode)
+  # ---------------------------------------------------------------------------
+  - id: 'upload-to-gcs'
+    name: 'gcr.io/cloud-builders/gsutil'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+        
+        if [ "${_PLAN_ONLY}" = "true" ]; then
+          echo "=== Skipping upload (plan-only mode) ==="
+          exit 0
+        fi
+        
+        echo "=== Uploading to GCS ==="
+        
+        # Upload config.json for reference
+        gsutil cp /workspace/config.json "gs://${_GCS_BUCKET}/terraform/config.json"
+        echo "Config: gs://${_GCS_BUCKET}/terraform/config.json"
+        
+        # Upload vms.json
+        gsutil cp terraform/benchmark/vms.json "gs://${_GCS_BUCKET}/terraform/vms.json"
+        echo "VMs: gs://${_GCS_BUCKET}/terraform/vms.json"
+        
+        echo ""
+        echo "=== Provisioning Complete ==="
+        echo "Next step: make configure"
+
+substitutions:
+  _GCS_BUCKET: 'base-mainnet-snapshot'
+  _VM: ''          # Optional: filter to specific VM name
+  _PLAN_ONLY: ''   # Optional: set to 'true' for dry-run (plan only, no apply)
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+tags: ['provision', 'benchmark']
+
+timeout: '1800s'  # 30 minutes

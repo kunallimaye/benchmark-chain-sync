@@ -1,0 +1,145 @@
+# =============================================================================
+# Create Golden Snapshot from VM
+# =============================================================================
+# Creates a golden snapshot from a synced VM's data disk.
+# The VM must be stopped before creating the snapshot for consistency.
+#
+# Usage:
+#   gcloud builds submit . \
+#     --config=cloudbuild/snapshots/create.yaml \
+#     --substitutions=_VM=op-reth-baseline,_SNAPSHOT_NAME=op-reth-golden-2026-02-01
+#
+# =============================================================================
+
+steps:
+  # ---------------------------------------------------------------------------
+  # Parse config.toml for project settings
+  # ---------------------------------------------------------------------------
+  - id: 'parse-config'
+    name: 'python:3.12-slim'
+    entrypoint: 'python3'
+    args:
+      - '-c'
+      - |
+        import tomllib
+        import sys
+
+        if not '${_VM}':
+            print("ERROR: _VM substitution is required", file=sys.stderr)
+            print("Usage: --substitutions=_VM=<vm-name>", file=sys.stderr)
+            sys.exit(1)
+
+        with open('config.toml', 'rb') as f:
+            config = tomllib.load(f)
+
+        project = config.get('project', {})
+        
+        print(f"Project: {project.get('project_id')}")
+        print(f"VM: ${_VM}")
+        print(f"Snapshot name: ${_SNAPSHOT_NAME}")
+
+        with open('/workspace/project_id.txt', 'w') as f:
+            f.write(project.get('project_id', ''))
+        with open('/workspace/zone.txt', 'w') as f:
+            f.write(project.get('zone', 'us-central1-a'))
+
+  # ---------------------------------------------------------------------------
+  # Stop VM for consistent snapshot
+  # ---------------------------------------------------------------------------
+  - id: 'stop-vm'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+        
+        PROJECT_ID=$$(cat /workspace/project_id.txt)
+        ZONE=$$(cat /workspace/zone.txt)
+        
+        echo "=== Stopping VM ${_VM} for consistent snapshot ==="
+        gcloud compute instances stop "${_VM}" \
+          --project="$$PROJECT_ID" \
+          --zone="$$ZONE" \
+          --quiet || echo "VM may already be stopped"
+        
+        # Wait for VM to fully stop
+        sleep 10
+
+  # ---------------------------------------------------------------------------
+  # Create snapshot from data disk
+  # ---------------------------------------------------------------------------
+  - id: 'create-snapshot'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+        
+        PROJECT_ID=$$(cat /workspace/project_id.txt)
+        ZONE=$$(cat /workspace/zone.txt)
+        DISK_NAME="${_VM}-data"
+        
+        # Generate snapshot name if not provided
+        SNAPSHOT_NAME="${_SNAPSHOT_NAME}"
+        if [ -z "$$SNAPSHOT_NAME" ]; then
+          SNAPSHOT_NAME="op-reth-golden-$$(date +%Y-%m-%d-%H-%M)"
+        fi
+        
+        echo "=== Creating snapshot $$SNAPSHOT_NAME from disk $$DISK_NAME ==="
+        
+        gcloud compute snapshots create "$$SNAPSHOT_NAME" \
+          --project="$$PROJECT_ID" \
+          --source-disk="$$DISK_NAME" \
+          --source-disk-zone="$$ZONE" \
+          --labels="managed-by=terraform,source-vm=${_VM}" \
+          --description="Golden snapshot from ${_VM}"
+        
+        echo ""
+        echo "=== Snapshot created ==="
+        gcloud compute snapshots describe "$$SNAPSHOT_NAME" \
+          --project="$$PROJECT_ID" \
+          --format="table(name,diskSizeGb,status,storageBytes.size())"
+        
+        echo ""
+        echo "Update config.toml to use this snapshot:"
+        echo "  [snapshot]"
+        echo "  name = \"$$SNAPSHOT_NAME\""
+
+  # ---------------------------------------------------------------------------
+  # Optionally restart VM
+  # ---------------------------------------------------------------------------
+  - id: 'restart-vm'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+        
+        if [ "${_NO_RESTART}" = "true" ]; then
+          echo "=== Skipping VM restart (--substitutions=_NO_RESTART=true) ==="
+          exit 0
+        fi
+        
+        PROJECT_ID=$$(cat /workspace/project_id.txt)
+        ZONE=$$(cat /workspace/zone.txt)
+        
+        echo "=== Restarting VM ${_VM} ==="
+        gcloud compute instances start "${_VM}" \
+          --project="$$PROJECT_ID" \
+          --zone="$$ZONE" \
+          --quiet
+
+substitutions:
+  _VM: ''              # Required: VM name to snapshot
+  _SNAPSHOT_NAME: ''   # Optional: custom snapshot name (defaults to op-reth-golden-YYYY-MM-DD-HH-MM)
+  _NO_RESTART: ''      # Optional: set to 'true' to leave VM stopped
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+tags: ['snapshots', 'create']
+
+timeout: '1800s'  # 30 minutes (snapshots can take a while)

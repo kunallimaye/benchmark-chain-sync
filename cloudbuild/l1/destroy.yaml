@@ -1,0 +1,89 @@
+# =============================================================================
+# Destroy L1 Infrastructure (BNE)
+# =============================================================================
+# Destroys the Blockchain Node Engine node.
+# Uses the new modular terraform structure at terraform/l1/
+#
+# WARNING: This will delete the L1 node! Re-syncing takes several days.
+#
+# Usage:
+#   gcloud builds submit . \
+#     --config=cloudbuild/l1/destroy.yaml
+#
+# =============================================================================
+
+steps:
+  # ---------------------------------------------------------------------------
+  # Parse config.toml for project settings
+  # ---------------------------------------------------------------------------
+  - id: 'parse-config'
+    name: 'python:3.12-slim'
+    entrypoint: 'python3'
+    args:
+      - '-c'
+      - |
+        import tomllib
+
+        with open('config.toml', 'rb') as f:
+            config = tomllib.load(f)
+
+        project = config.get('project', {})
+        
+        print("=== L1 Destroy Configuration ===")
+        print(f"Project: {project.get('project_id')}")
+        print(f"Region: {project.get('region')}")
+        print("WARNING: This will delete the BNE node!")
+
+        with open('/workspace/project_id.txt', 'w') as f:
+            f.write(project.get('project_id', ''))
+        with open('/workspace/region.txt', 'w') as f:
+            f.write(project.get('region', 'us-central1'))
+
+  # ---------------------------------------------------------------------------
+  # Terraform Init
+  # ---------------------------------------------------------------------------
+  - id: 'terraform-init'
+    name: 'hashicorp/terraform:1.9'
+    dir: 'terraform/l1'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        terraform init -input=false
+
+  # ---------------------------------------------------------------------------
+  # Terraform Destroy (BNE)
+  # ---------------------------------------------------------------------------
+  - id: 'terraform-destroy'
+    name: 'hashicorp/terraform:1.9'
+    dir: 'terraform/l1'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        set -e
+        
+        PROJECT_ID=$$(cat /workspace/project_id.txt)
+        REGION=$$(cat /workspace/region.txt)
+        
+        echo "=== Destroying L1 Infrastructure ==="
+        echo "Project: $$PROJECT_ID"
+        echo "Region: $$REGION"
+        echo ""
+        echo "WARNING: Re-syncing BNE takes several days!"
+        echo ""
+        
+        terraform destroy -auto-approve \
+          -var="project_id=$$PROJECT_ID" \
+          -var="region=$$REGION" \
+          -var="l1_network=MAINNET"
+        
+        echo ""
+        echo "=== L1 Infrastructure Destroyed ==="
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+tags: ['l1', 'destroy']
+
+timeout: '3600s'  # 1 hour

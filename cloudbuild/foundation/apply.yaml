@@ -1,0 +1,108 @@
+# =============================================================================
+# Apply Foundation Infrastructure
+# =============================================================================
+# Creates/updates foundation infrastructure:
+#   - GCP APIs
+#   - Service Account + IAM bindings
+#   - Cloud Build Private Pool (for SSH to VMs)
+#
+# This should be run once when setting up a new project, and updated
+# whenever foundation configuration changes.
+#
+# Usage:
+#   gcloud builds submit . \
+#     --config=cloudbuild/foundation/apply.yaml
+#
+# =============================================================================
+
+steps:
+  # ---------------------------------------------------------------------------
+  # Parse config.toml for project settings
+  # ---------------------------------------------------------------------------
+  - id: 'parse-config'
+    name: 'python:3.12-slim'
+    entrypoint: 'python3'
+    args:
+      - '-c'
+      - |
+        import tomllib
+        import json
+
+        with open('config.toml', 'rb') as f:
+            config = tomllib.load(f)
+
+        project = config.get('project', {})
+        
+        print("=== Foundation Configuration ===")
+        print(f"Project: {project.get('project_id')}")
+        print(f"Region: {project.get('region')}")
+        print(f"Network: {project.get('network')}")
+        print(f"GCS Bucket: {project.get('gcs_bucket')}")
+
+        with open('/workspace/project_id.txt', 'w') as f:
+            f.write(project.get('project_id', ''))
+        with open('/workspace/region.txt', 'w') as f:
+            f.write(project.get('region', 'us-central1'))
+        with open('/workspace/network.txt', 'w') as f:
+            f.write(project.get('network', 'default'))
+        with open('/workspace/gcs_bucket.txt', 'w') as f:
+            f.write(project.get('gcs_bucket', ''))
+
+  # ---------------------------------------------------------------------------
+  # Terraform Init
+  # ---------------------------------------------------------------------------
+  - id: 'terraform-init'
+    name: 'hashicorp/terraform:1.9'
+    dir: 'terraform/foundation'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        terraform init -input=false
+
+  # ---------------------------------------------------------------------------
+  # Terraform Plan/Apply
+  # ---------------------------------------------------------------------------
+  - id: 'terraform-apply'
+    name: 'hashicorp/terraform:1.9'
+    dir: 'terraform/foundation'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        set -e
+        
+        PROJECT_ID=$$(cat /workspace/project_id.txt)
+        REGION=$$(cat /workspace/region.txt)
+        NETWORK=$$(cat /workspace/network.txt)
+        GCS_BUCKET=$$(cat /workspace/gcs_bucket.txt)
+        
+        if [ "${_PLAN_ONLY}" = "true" ]; then
+          echo "=== Terraform Plan (dry-run) ==="
+          terraform plan \
+            -var="project_id=$$PROJECT_ID" \
+            -var="region=$$REGION" \
+            -var="network=$$NETWORK" \
+            -var="gcs_bucket=$$GCS_BUCKET"
+        else
+          echo "=== Applying Foundation ==="
+          terraform apply -auto-approve \
+            -var="project_id=$$PROJECT_ID" \
+            -var="region=$$REGION" \
+            -var="network=$$NETWORK" \
+            -var="gcs_bucket=$$GCS_BUCKET"
+          
+          echo ""
+          echo "=== Foundation Outputs ==="
+          terraform output
+        fi
+
+substitutions:
+  _PLAN_ONLY: ''  # Set to 'true' for dry-run
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+tags: ['foundation', 'apply']
+
+timeout: '600s'

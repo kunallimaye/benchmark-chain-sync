@@ -1,0 +1,67 @@
+# =============================================================================
+# List Available Snapshots
+# =============================================================================
+# Lists all golden snapshots available for VM provisioning.
+#
+# Usage:
+#   gcloud builds submit . \
+#     --config=cloudbuild/snapshots/list.yaml
+#
+# =============================================================================
+
+steps:
+  # ---------------------------------------------------------------------------
+  # Parse config.toml for project settings
+  # ---------------------------------------------------------------------------
+  - id: 'parse-config'
+    name: 'python:3.12-slim'
+    entrypoint: 'python3'
+    args:
+      - '-c'
+      - |
+        import tomllib
+
+        with open('config.toml', 'rb') as f:
+            config = tomllib.load(f)
+
+        project = config.get('project', {})
+        snapshot = config.get('snapshot', {})
+        
+        print(f"Project: {project.get('project_id')}")
+        print(f"Current golden snapshot: {snapshot.get('name', 'NOT SET')}")
+
+        with open('/workspace/project_id.txt', 'w') as f:
+            f.write(project.get('project_id', ''))
+
+  # ---------------------------------------------------------------------------
+  # List snapshots
+  # ---------------------------------------------------------------------------
+  - id: 'list-snapshots'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+        
+        PROJECT_ID=$$(cat /workspace/project_id.txt)
+        
+        echo "=== Available Golden Snapshots ==="
+        echo ""
+        gcloud compute snapshots list \
+          --project="$$PROJECT_ID" \
+          --filter="name~op-reth" \
+          --format="table(name,diskSizeGb,status,creationTimestamp.date('%Y-%m-%d %H:%M'),storageBytes.size())" \
+          --sort-by=~creationTimestamp
+        
+        echo ""
+        echo "To use a snapshot, update config.toml:"
+        echo "  [snapshot]"
+        echo "  name = \"<snapshot-name>\""
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+tags: ['snapshots', 'list']
+
+timeout: '60s'

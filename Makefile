@@ -21,7 +21,8 @@
         create-l1 destroy-l1 status-l1 \
         create-snapshot list-snapshots delete-snapshot \
         status validate-terraform help \
-        build-status configure-status benchmark-status
+        build-status configure-status benchmark-status \
+        apply-foundation apply-monitoring
 
 # -----------------------------------------------------------------------------
 # Load environment variables from .env if it exists
@@ -59,6 +60,22 @@ VM ?=
 SNAPSHOT ?=
 
 # =============================================================================
+# Foundation Infrastructure (APIs, IAM, Cloud Build Pool)
+# =============================================================================
+
+apply-foundation: ## Apply foundation infrastructure (APIs, IAM, Cloud Build Pool)
+	@echo "=== Applying Foundation Infrastructure ==="
+	gcloud builds submit . \
+		--config=cloudbuild/foundation/apply.yaml \
+		--project=$(PROJECT_ID)
+
+apply-monitoring: ## Apply monitoring infrastructure (dashboards, log metrics)
+	@echo "=== Applying Monitoring Infrastructure ==="
+	gcloud builds submit . \
+		--config=cloudbuild/monitoring/apply.yaml \
+		--project=$(PROJECT_ID)
+
+# =============================================================================
 # L1 Infrastructure (BNE)
 # =============================================================================
 
@@ -68,18 +85,16 @@ create-l1: ## Create L1 BNE node (takes days to sync!)
 	@echo "WARNING: BNE nodes take several days to sync!"
 	@echo ""
 	gcloud builds submit . \
-		--config=cloudbuild/create-l1.yaml \
-		--project=$(PROJECT_ID) \
-		--substitutions=_PROJECT_ID=$(PROJECT_ID),_REGION=$(REGION),_ZONE=$(ZONE),_NETWORK=$(NETWORK),_GCS_BUCKET=$(GCS_BUCKET),_L1_NETWORK=$(L1_NETWORK)
+		--config=cloudbuild/l1/create.yaml \
+		--project=$(PROJECT_ID)
 
 destroy-l1: ## Destroy L1 infrastructure (WARNING: re-sync takes days!)
 	@echo "=== Destroying L1 Infrastructure ==="
 	@echo "WARNING: Re-syncing BNE takes several days!"
 	@read -p "Are you sure? [y/N] " confirm && [ "$$confirm" = "y" ] || exit 1
 	gcloud builds submit . \
-		--config=cloudbuild/destroy-l1.yaml \
-		--project=$(PROJECT_ID) \
-		--substitutions=_PROJECT_ID=$(PROJECT_ID),_REGION=$(REGION),_ZONE=$(ZONE),_NETWORK=$(NETWORK),_GCS_BUCKET=$(GCS_BUCKET)
+		--config=cloudbuild/l1/destroy.yaml \
+		--project=$(PROJECT_ID)
 
 status-l1: ## Check BNE node sync status and endpoints
 	@echo "=== L1 BNE Node Status ==="
@@ -108,7 +123,7 @@ build-reth: ## Build op-reth binary (uses config.toml [build] section)
 	@[ -n "$(RETH_COMMIT)" ] && echo "Commit: $(RETH_COMMIT)" || true
 	@echo ""
 	gcloud builds submit . \
-		--config=cloudbuild/build-op-reth.yaml \
+		--config=cloudbuild/builds/op-reth.yaml \
 		--project=$(PROJECT_ID) \
 		--substitutions=_RETH_REPO=$(RETH_REPO),_RETH_BRANCH=$(RETH_BRANCH),_RETH_COMMIT=$(RETH_COMMIT),_GCS_BUCKET=$(GCS_BUCKET)
 
@@ -117,7 +132,7 @@ build-op-node: ## Build op-node binary (extracts from Docker image)
 	@echo "Version: $(OP_NODE_VERSION)"
 	@echo ""
 	gcloud builds submit . \
-		--config=cloudbuild/build-op-node.yaml \
+		--config=cloudbuild/builds/op-node.yaml \
 		--project=$(PROJECT_ID) \
 		--substitutions=_OP_NODE_VERSION=$(OP_NODE_VERSION),_GCS_BUCKET=$(GCS_BUCKET)
 
@@ -201,11 +216,6 @@ delete-snapshot: ## Delete a golden snapshot (requires SNAPSHOT=name)
 # =============================================================================
 
 provision: ## Create VMs from config.toml (all VMs, or VM=name for specific)
-	@if [ -z "$(L1_API_KEY)" ]; then \
-		echo "ERROR: L1_API_KEY is required"; \
-		echo "Create .env file with L1_API_KEY=... (see .env.example)"; \
-		exit 1; \
-	fi
 	@echo "=== Provisioning Infrastructure ==="
 	@if [ -n "$(VM)" ]; then \
 		echo "VM Filter: $(VM)"; \
@@ -214,17 +224,12 @@ provision: ## Create VMs from config.toml (all VMs, or VM=name for specific)
 	fi
 	@echo ""
 	gcloud builds submit . \
-		--config=cloudbuild/provision.yaml \
+		--config=cloudbuild/benchmark/provision.yaml \
 		--project=$(PROJECT_ID) \
-		--substitutions=_GCS_BUCKET=$(GCS_BUCKET),_L1_API_KEY=$(L1_API_KEY),_VM=$(VM) \
+		--substitutions=_GCS_BUCKET=$(GCS_BUCKET),_VM=$(VM) \
 		--async 
 
 provision-plan: ## Dry-run provision (terraform plan, no apply)
-	@if [ -z "$(L1_API_KEY)" ]; then \
-		echo "ERROR: L1_API_KEY is required"; \
-		echo "Create .env file with L1_API_KEY=... (see .env.example)"; \
-		exit 1; \
-	fi
 	@echo "=== Provisioning Plan (dry-run) ==="
 	@if [ -n "$(VM)" ]; then \
 		echo "VM Filter: $(VM)"; \
@@ -233,9 +238,9 @@ provision-plan: ## Dry-run provision (terraform plan, no apply)
 	fi
 	@echo ""
 	gcloud builds submit . \
-		--config=cloudbuild/provision.yaml \
+		--config=cloudbuild/benchmark/provision.yaml \
 		--project=$(PROJECT_ID) \
-		--substitutions=_GCS_BUCKET=$(GCS_BUCKET),_L1_API_KEY=$(L1_API_KEY),_VM=$(VM),_PLAN_ONLY=true
+		--substitutions=_GCS_BUCKET=$(GCS_BUCKET),_VM=$(VM),_PLAN_ONLY=true
 
 # =============================================================================
 # Configure Infrastructure (Ansible only)
@@ -249,7 +254,7 @@ configure: ## Configure VMs with Ansible (all VMs, or VM=name for specific)
 		echo "VMs: all"; \
 	fi
 	gcloud builds submit . \
-		--config=cloudbuild/configure.yaml \
+		--config=cloudbuild/benchmark/configure.yaml \
 		--project=$(PROJECT_ID) \
 		--region=$(REGION) \
 		--substitutions=_VM=$(VM),_GCS_BUCKET=$(GCS_BUCKET) \
@@ -348,7 +353,7 @@ benchmark: ## Run benchmark on VM (requires VM=name)
 	fi
 	@echo "=== Running benchmark on $(VM) ==="
 	gcloud builds submit . \
-		--config=cloudbuild/run-benchmark.yaml \
+		--config=cloudbuild/benchmark/run.yaml \
 		--project=$(PROJECT_ID) \
 		--region=$(REGION) \
 		--substitutions=_VM=$(VM),_GCS_BUCKET=$(GCS_BUCKET)
@@ -366,7 +371,7 @@ cleanup: ## Destroy VMs (all VMs, or VM=name for specific)
 		read -p "Are you sure you want to destroy ALL VMs? [y/N] " confirm && [ "$$confirm" = "y" ] || exit 1; \
 	fi
 	gcloud builds submit . \
-		--config=cloudbuild/cleanup.yaml \
+		--config=cloudbuild/benchmark/cleanup.yaml \
 		--project=$(PROJECT_ID) \
 		--substitutions=_VM=$(VM),_GCS_BUCKET=$(GCS_BUCKET)
 

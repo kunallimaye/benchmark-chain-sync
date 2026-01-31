@@ -34,19 +34,6 @@ sample_ratio = 0.01     # 1% of traces (0.0 to 1.0)
 filter = "info"         # Trace filter level: trace, debug, info, warn, error
 
 # -----------------------------------------------------------------------------
-# Snapshot Download Configuration
-# -----------------------------------------------------------------------------
-# Shared download disk for snapshot storage. Downloaded once, shared read-only
-# across all VMs for extraction. This saves time and bandwidth.
-# -----------------------------------------------------------------------------
-[download]
-snapshot_url = "gs://base-mainnet-snapshot/base-mainnet-reth-1768474496.tar.zst"
-disk_name = "op-reth-snapshot-download"
-disk_size_gb = 8000
-disk_type = "pd-balanced"
-downloader_machine_type = "n2-standard-8"
-
-# -----------------------------------------------------------------------------
 # VM Defaults
 # -----------------------------------------------------------------------------
 # Defaults for [[vm]] sections. Only [defaults.vm] is supported.
@@ -79,20 +66,23 @@ engine_workers = 44              # Set to vCPU count (c3-standard-44 = 44 vCPUs)
 #                  reth_version, engine_cache_mb, engine_workers,
 #                  provisioned_iops, provisioned_throughput (for Hyperdisk)
 # All optional fields inherit from [defaults.vm] if not specified.
+#
+# NOTE: All VMs were deleted during infrastructure refactoring (2026-02-01).
+# Add new VM definitions here when ready to provision.
 # -----------------------------------------------------------------------------
 
-[[vm]]
-name = "op-reth-c3-standard-44-pd-balanced-with-tdx"
-confidential_compute = true
-
-[[vm]]
-name = "op-reth-c3-standard-44-pd-balanced-no-tdx"
-confidential_compute = false
-
-[[vm]]
-name = "c4-standard-192-lssd-no-tdx"
-machine_type = "c4-standard-192-lssd"
-confidential_compute = false
+# Example VM configurations (uncomment to use):
+#
+# [[vm]]
+# name = "op-reth-c3-standard-44-pd-balanced"
+# confidential_compute = false
+#
+# [[vm]]
+# name = "op-reth-c4-standard-192-lssd"
+# machine_type = "c4-standard-192-lssd"
+# confidential_compute = false
+# engine_cache_mb = 65536
+# engine_workers = 192
 
 # =============================================================================
 # Reth Configuration (Performance Tuning)
@@ -162,26 +152,4 @@ etl_file_size = 524288000                   # File size before flush (reth defau
 name = "op-reth-pruned-2026-01-31"
 disk_size_gb = 3000  # Pruned snapshot is smaller (3TB disk)
 
-# =============================================================================
-# ORPHANED VMs (NOT in Terraform state - manage via gcloud CLI)
-# =============================================================================
-# These VMs were removed from Terraform state but are still running in GCP.
-# They are NOT managed by Terraform - do NOT uncomment or they will conflict.
-#
-# To check status: gcloud compute instances describe <name> --zone=us-central1-a
-# To delete: gcloud compute instances delete <name> --zone=us-central1-a
-# To SSH: gcloud compute ssh <name> --zone=us-central1-a
-# =============================================================================
 
-# [[vm]]
-# name = "op-reth-c3-standard-176-lssd"
-# machine_type = "c3-standard-176-lssd"
-# engine_cache_mb = 65536          # 64GB cross-block cache (704GB RAM available)
-# engine_workers = 176             # 176 vCPUs
-
-# [[vm]]
-# name = "op-reth-c3-standard-176-lssd-notdx"
-# machine_type = "c3-standard-176-lssd"
-# confidential_compute = false
-# engine_cache_mb = 65536
-# engine_workers = 176

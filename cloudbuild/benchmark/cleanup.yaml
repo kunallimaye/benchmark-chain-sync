@@ -1,18 +1,18 @@
 # =============================================================================
-# Cleanup Resources (Terraform Destroy)
+# Cleanup Benchmark VMs (Terraform Destroy)
 # =============================================================================
 # Destroys benchmark instance(s). Can destroy single VM or all.
-# Does NOT destroy L1 infrastructure (BNE) - use destroy-l1 for that.
+# Uses the new modular terraform structure at terraform/benchmark/
 #
 # Usage:
 #   # Destroy single VM
 #   gcloud builds submit . \
-#     --config=cloudbuild/cleanup.yaml \
+#     --config=cloudbuild/benchmark/cleanup.yaml \
 #     --substitutions=_VM=op-reth-baseline
 #
 #   # Destroy all VMs
 #   gcloud builds submit . \
-#     --config=cloudbuild/cleanup.yaml
+#     --config=cloudbuild/benchmark/cleanup.yaml
 #
 # =============================================================================
 
@@ -36,12 +36,18 @@ steps:
 
         # Get defaults for VM
         defaults = config.get('defaults', {}).get('vm', {})
+        project = config.get('project', {})
+        snapshot = config.get('snapshot', {})
 
         # Merge defaults into each VM
         vms = config.get('vm', [])
         for vm in vms:
+            machine_type = vm.get('machine_type', defaults.get('machine_type', ''))
+            is_lssd = machine_type.endswith('-lssd')
             for key, value in defaults.items():
                 if key not in vm:
+                    if is_lssd and key in ('storage_type', 'disk_size_gb'):
+                        continue
                     vm[key] = value
 
         # Filter: if _VM is set, REMOVE that VM (keep others)
@@ -60,94 +66,88 @@ steps:
             print("Removing ALL VMs")
             vms = []
 
-        config['vm'] = vms
-
-        with open('/workspace/config.json', 'w') as f:
-            json.dump(config, f, indent=2)
-
-  # ---------------------------------------------------------------------------
-  # Generate Terraform variables (with reduced/empty instances)
-  # ---------------------------------------------------------------------------
-  - id: 'generate-tfvars'
-    name: 'python:3.12-slim'
-    entrypoint: 'python3'
-    args:
-      - '-c'
-      - |
-        import json
-
-        with open('/workspace/config.json', 'r') as f:
-            config = json.load(f)
-
-        project = config.get('project', {})
-        l1 = config.get('l1', {})
-        vms = config.get('vm', [])
-
-        # Convert VMs list to map keyed by name
-        instances = {}
+        # Write vms.json with remaining VMs (or empty list)
+        vms_config = []
         for vm in vms:
-            name = vm.get('name')
-            instances[name] = {
+            vms_config.append({
+                'name': vm.get('name'),
+                'zone': vm.get('zone', project.get('zone')),
                 'machine_type': vm.get('machine_type'),
                 'storage_type': vm.get('storage_type'),
-                'disk_size_gb': vm.get('disk_size_gb'),
-                'reth_version': vm.get('reth_version'),
-                'snapshot_url': vm.get('snapshot_url'),
-                'op_node_version': vm.get('op_node_version'),
-            }
+                'disk_size_gb': vm.get('disk_size_gb', 15000),
+                'provisioned_iops': vm.get('provisioned_iops'),
+                'provisioned_throughput': vm.get('provisioned_throughput'),
+                'confidential_compute': vm.get('confidential_compute', False),
+            })
+        
+        with open('terraform/benchmark/vms.json', 'w') as f:
+            json.dump(vms_config, f, indent=2)
 
-        tfvars = {
-            'project_id': project.get('project_id'),
-            'region': project.get('region'),
-            'zone': project.get('zone'),
-            'network': project.get('network'),
-            'gcs_bucket': project.get('gcs_bucket'),
-            'l1_rpc_endpoint': l1.get('rpc_endpoint'),
-            'l1_beacon_endpoint': l1.get('beacon_endpoint'),
-            'create_l1': False,
-            'instances': instances,
-        }
+        print(f"VMs to keep: {[vm['name'] for vm in vms_config]}")
 
-        with open('/workspace/terraform.tfvars.json', 'w') as f:
-            json.dump(tfvars, f, indent=2)
-
-        print(f"=== Terraform will manage {len(instances)} instances ===")
-        for name in instances:
-            print(f"  - {name}")
+        # Write config values
+        with open('/workspace/project_id.txt', 'w') as f:
+            f.write(project.get('project_id', ''))
+        with open('/workspace/region.txt', 'w') as f:
+            f.write(project.get('region', 'us-central1'))
+        with open('/workspace/network.txt', 'w') as f:
+            f.write(project.get('network', 'default'))
+        with open('/workspace/snapshot_name.txt', 'w') as f:
+            f.write(snapshot.get('name', ''))
+        with open('/workspace/snapshot_disk_size_gb.txt', 'w') as f:
+            f.write(str(snapshot.get('disk_size_gb', 12000)))
+        with open('/workspace/reth_version.txt', 'w') as f:
+            f.write(vms[0].get('reth_version', 'main') if vms else 'main')
 
   # ---------------------------------------------------------------------------
   # Terraform Init
   # ---------------------------------------------------------------------------
   - id: 'terraform-init'
     name: 'hashicorp/terraform:1.9'
-    dir: 'terraform'
+    dir: 'terraform/benchmark'
     entrypoint: 'sh'
     args:
       - '-c'
       - |
-        terraform init \
-          -backend-config="bucket=${_GCS_BUCKET}" \
-          -backend-config="prefix=terraform/state/benchmark"
+        terraform init -input=false
 
   # ---------------------------------------------------------------------------
   # Terraform Apply (destroys removed instances)
   # ---------------------------------------------------------------------------
   - id: 'terraform-apply'
     name: 'hashicorp/terraform:1.9'
-    dir: 'terraform'
+    dir: 'terraform/benchmark'
     entrypoint: 'sh'
     args:
       - '-c'
       - |
         set -e
         
+        # Read config values
+        PROJECT_ID=$$(cat /workspace/project_id.txt)
+        REGION=$$(cat /workspace/region.txt)
+        NETWORK=$$(cat /workspace/network.txt)
+        SNAPSHOT_NAME=$$(cat /workspace/snapshot_name.txt)
+        SNAPSHOT_DISK_SIZE_GB=$$(cat /workspace/snapshot_disk_size_gb.txt)
+        RETH_VERSION=$$(cat /workspace/reth_version.txt)
+        
+        # Use default compute service account
+        PROJECT_NUMBER=$$(gcloud projects describe $$PROJECT_ID --format="value(projectNumber)")
+        SERVICE_ACCOUNT="$${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+        
         echo "=== Applying Terraform (destroying removed instances) ==="
         terraform apply -auto-approve \
-          -var-file=/workspace/terraform.tfvars.json
+          -var="project_id=$$PROJECT_ID" \
+          -var="region=$$REGION" \
+          -var="network=$$NETWORK" \
+          -var="snapshot_name=$$SNAPSHOT_NAME" \
+          -var="snapshot_disk_size_gb=$$SNAPSHOT_DISK_SIZE_GB" \
+          -var="reth_version=$$RETH_VERSION" \
+          -var="service_account_email=$$SERVICE_ACCOUNT"
         
         echo ""
         echo "=== Remaining instances ==="
-        terraform output -json instances || echo '{}'
+        terraform output -json vms || echo '{}'
 
   # ---------------------------------------------------------------------------
   # Upload updated state to GCS
@@ -162,19 +162,11 @@ steps:
         
         echo "=== Uploading updated files to GCS ==="
         
-        # Generate and upload instances.json from terraform output
-        cd terraform
-        terraform output -json instances > /workspace/instances.json 2>/dev/null || echo '{}' > /workspace/instances.json
-        gsutil cp /workspace/instances.json "gs://${_GCS_BUCKET}/terraform/instances.json"
-        
-        # Update inventory if it exists
-        if [ -f ../ansible/inventory/hosts.yml ]; then
-          gsutil cp ../ansible/inventory/hosts.yml "gs://${_GCS_BUCKET}/ansible/inventory.yml"
-        fi
+        # Upload vms.json
+        gsutil cp terraform/benchmark/vms.json "gs://${_GCS_BUCKET}/terraform/vms.json"
         
         echo ""
         echo "=== Cleanup Complete ==="
-        echo "Note: L1 infrastructure (BNE) was preserved."
 
 substitutions:
   _GCS_BUCKET: 'base-mainnet-snapshot'
@@ -183,6 +175,6 @@ substitutions:
 options:
   logging: CLOUD_LOGGING_ONLY
 
-tags: ['cleanup']
+tags: ['cleanup', 'benchmark']
 
 timeout: '600s'
