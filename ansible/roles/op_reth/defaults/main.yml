@@ -16,31 +16,79 @@ start_services: true
 op_reth_sequencer_url: "{{ base_sequencer_urls[network] }}"
 
 # -----------------------------------------------------------------------------
+# Node Mode
+# -----------------------------------------------------------------------------
+# Controls whether the node runs in archive or full (pruned) mode.
+# - "archive": Keep all historical data from genesis (default)
+# - "full": Prune to last ~10,064 blocks (~3.5 hours of state history)
+# NOTE: Node mode cannot be changed after initial sync.
+# Use "full" with pruned snapshots for smaller disk and faster sync.
+node_mode: "archive"
+
+# -----------------------------------------------------------------------------
 # Performance Tuning (CLI Flags)
 # -----------------------------------------------------------------------------
 # These settings optimize op-reth for faster sync and execution.
 # engine_cache_mb: Cross-block cache size in MB. Larger = more state in memory.
 # engine_workers: State root worker threads. Recommend: set to vCPU count.
 # engine_reserved_cores: CPU cores reserved for non-Reth processes (0 = use all).
-engine_cache_mb: 4096            # Cross-block cache size in MB (Reth default)
-engine_workers: 0                # State root workers (0 = Reth auto-detect)
+engine_cache_mb: 4096            # Cross-block cache size in MB (reth default)
+engine_workers: 0                # State root workers (0 = reth auto-detect)
 engine_reserved_cores: 0         # CPU cores reserved for non-Reth processes
 
 # -----------------------------------------------------------------------------
-# reth.toml Configuration (Batch Size)
+# reth.toml Configuration - Stage Thresholds
 # -----------------------------------------------------------------------------
-# Controls execution batch size for checkpoint frequency.
-# Smaller batches = more frequent checkpoint updates = better ETA visibility
-# Trade-off: ~10-15% slower total sync vs 500K default
-reth_batch_size: 10000           # Blocks per execution batch (default: 500000)
-reth_batch_duration: "1m"        # Max duration per batch (default: 10m)
+# Controls batch/commit thresholds for all pipeline stages.
+# These are reth's default values for maximum sync performance.
+# Reduce thresholds for more frequent checkpoint updates (better ETA visibility)
+# at the cost of slower total sync time.
+# See docs/PERFORMANCE-TUNING.md for detailed explanations.
+# -----------------------------------------------------------------------------
+
+# Execution stage thresholds (commits when ANY threshold is hit)
+reth_execution_max_blocks: 500000              # Blocks per batch (reth default)
+reth_execution_max_changes: 5000000            # State changes per batch (reth default)
+reth_execution_max_cumulative_gas: 1500000000000  # Gas per batch (reth default: 1.5T)
+reth_execution_max_duration: "10m"             # Max duration per batch (reth default)
+
+# Headers stage
+reth_headers_commit_threshold: 10000           # Blocks per commit (reth default)
+
+# Sender Recovery stage
+reth_sender_recovery_commit_threshold: 5000000 # Transactions per commit (reth default)
+
+# Account Hashing stage
+reth_account_hashing_clean_threshold: 500000   # Blocks before full re-hash (reth default)
+reth_account_hashing_commit_threshold: 100000  # Entities per commit (reth default)
+
+# Storage Hashing stage
+reth_storage_hashing_clean_threshold: 500000   # Blocks before full re-hash (reth default)
+reth_storage_hashing_commit_threshold: 100000  # Entities per commit (reth default)
+
+# Merkle stage
+reth_merkle_incremental_threshold: 7000        # Blocks for incremental mode (reth default)
+reth_merkle_rebuild_threshold: 100000          # Blocks before full rebuild (reth default)
+
+# Transaction Lookup stage
+reth_transaction_lookup_chunk_size: 5000000    # Transactions per chunk (reth default)
+
+# Index History stages
+reth_index_account_history_commit_threshold: 100000  # Blocks per commit (reth default)
+reth_index_storage_history_commit_threshold: 100000  # Blocks per commit (reth default)
+
+# Prune stage
+reth_prune_commit_threshold: 1000000           # Entries per commit (reth default)
+
+# ETL (Extract, Transform, Load) settings
+reth_etl_file_size: 524288000                  # File size before flush (reth default: 500MB)
 
 # -----------------------------------------------------------------------------
 # Database Configuration (MDBX)
 # -----------------------------------------------------------------------------
 # db_max_size_bytes: Maximum database size in bytes (0 = use default 8TB)
 # db_growth_step_bytes: Database growth increment in bytes (default 4GB)
-db_max_size_bytes: 0             # Set via config.toml (0 = use Reth default)
+db_max_size_bytes: 0             # Set via config.toml (0 = use reth default)
 db_growth_step_bytes: 4294967296 # 4GB
 
 # -----------------------------------------------------------------------------

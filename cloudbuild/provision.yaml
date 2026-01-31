@@ -187,6 +187,8 @@ steps:
                 # Performance tuning
                 'engine_cache_mb': vm.get('engine_cache_mb', 4096),
                 'engine_workers': vm.get('engine_workers', 0),
+                # Node mode: "archive" or "full" (pruned)
+                'node_mode': vm.get('node_mode', 'archive'),
                 # Hyperdisk settings
                 'provisioned_iops': vm.get('provisioned_iops') if is_hyperdisk else None,
                 'provisioned_throughput': vm.get('provisioned_throughput') if is_hyperdisk else None,
@@ -209,9 +211,26 @@ steps:
             'tracing_enabled': tracing.get('enabled', True),
             'tracing_sample_ratio': tracing.get('sample_ratio', 0.01),
             'tracing_filter': tracing.get('filter', 'info'),
-            # Reth configuration (for Ansible inventory)
-            'reth_batch_size': reth_config.get('batch_size', 10000),
-            'reth_batch_duration': reth_config.get('batch_duration', '1m'),
+            # Reth configuration - Stage thresholds (for Ansible inventory)
+            # Defaults are reth's actual defaults for maximum sync performance
+            'reth_execution_max_blocks': reth_config.get('execution_max_blocks', 500000),
+            'reth_execution_max_changes': reth_config.get('execution_max_changes', 5000000),
+            'reth_execution_max_cumulative_gas': reth_config.get('execution_max_cumulative_gas', 1500000000000),
+            'reth_execution_max_duration': reth_config.get('execution_max_duration', '10m'),
+            'reth_headers_commit_threshold': reth_config.get('headers_commit_threshold', 10000),
+            'reth_sender_recovery_commit_threshold': reth_config.get('sender_recovery_commit_threshold', 5000000),
+            'reth_account_hashing_clean_threshold': reth_config.get('account_hashing_clean_threshold', 500000),
+            'reth_account_hashing_commit_threshold': reth_config.get('account_hashing_commit_threshold', 100000),
+            'reth_storage_hashing_clean_threshold': reth_config.get('storage_hashing_clean_threshold', 500000),
+            'reth_storage_hashing_commit_threshold': reth_config.get('storage_hashing_commit_threshold', 100000),
+            'reth_merkle_incremental_threshold': reth_config.get('merkle_incremental_threshold', 7000),
+            'reth_merkle_rebuild_threshold': reth_config.get('merkle_rebuild_threshold', 100000),
+            'reth_transaction_lookup_chunk_size': reth_config.get('transaction_lookup_chunk_size', 5000000),
+            'reth_index_account_history_commit_threshold': reth_config.get('index_account_history_commit_threshold', 100000),
+            'reth_index_storage_history_commit_threshold': reth_config.get('index_storage_history_commit_threshold', 100000),
+            'reth_prune_commit_threshold': reth_config.get('prune_commit_threshold', 1000000),
+            'reth_etl_file_size': reth_config.get('etl_file_size', 524288000),
+            # Database configuration
             'db_max_size_gb': reth_config.get('db_max_size_gb', 15000),
             'db_growth_step_mb': reth_config.get('db_growth_step_mb', 4096),
         }

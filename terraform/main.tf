@@ -152,6 +152,8 @@ resource "local_file" "ansible_inventory" {
           # Performance tuning
           engine_cache_mb = var.instances[k].engine_cache_mb
           engine_workers  = var.instances[k].engine_workers
+          # Node mode: "archive" or "full" (pruned)
+          node_mode = var.instances[k].node_mode
           # LSSD machines need rsync from temp disk
           is_lssd_machine = v.is_lssd_machine
         }
@@ -168,9 +170,25 @@ resource "local_file" "ansible_inventory" {
         tracing_enabled      = var.tracing_enabled
         tracing_sample_ratio = var.tracing_sample_ratio
         tracing_filter       = var.tracing_filter
-        # Reth configuration
-        reth_batch_size      = var.reth_batch_size
-        reth_batch_duration  = var.reth_batch_duration
+        # Reth configuration - Stage thresholds
+        reth_execution_max_blocks              = var.reth_execution_max_blocks
+        reth_execution_max_changes             = var.reth_execution_max_changes
+        reth_execution_max_cumulative_gas      = var.reth_execution_max_cumulative_gas
+        reth_execution_max_duration            = var.reth_execution_max_duration
+        reth_headers_commit_threshold          = var.reth_headers_commit_threshold
+        reth_sender_recovery_commit_threshold  = var.reth_sender_recovery_commit_threshold
+        reth_account_hashing_clean_threshold   = var.reth_account_hashing_clean_threshold
+        reth_account_hashing_commit_threshold  = var.reth_account_hashing_commit_threshold
+        reth_storage_hashing_clean_threshold   = var.reth_storage_hashing_clean_threshold
+        reth_storage_hashing_commit_threshold  = var.reth_storage_hashing_commit_threshold
+        reth_merkle_incremental_threshold      = var.reth_merkle_incremental_threshold
+        reth_merkle_rebuild_threshold          = var.reth_merkle_rebuild_threshold
+        reth_transaction_lookup_chunk_size     = var.reth_transaction_lookup_chunk_size
+        reth_index_account_history_commit_threshold  = var.reth_index_account_history_commit_threshold
+        reth_index_storage_history_commit_threshold  = var.reth_index_storage_history_commit_threshold
+        reth_prune_commit_threshold            = var.reth_prune_commit_threshold
+        reth_etl_file_size                     = var.reth_etl_file_size
+        # Database configuration
         db_max_size_bytes    = var.db_max_size_gb * 1024 * 1024 * 1024
         db_growth_step_bytes = var.db_growth_step_mb * 1024 * 1024
       }

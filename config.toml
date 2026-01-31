@@ -59,6 +59,11 @@ storage_type = "pd-balanced"
 confidential_compute = true  # Enable TDX confidential compute
 reth_version = "6df249c"
 
+# Node mode: "archive" (keep all history) or "full" (prune to last ~10K blocks)
+# Use "full" with pruned snapshots for smaller disk footprint and faster sync.
+# NOTE: Node mode cannot be changed after initial sync.
+node_mode = "full"
+
 # Performance tuning (for faster sync)
 # engine_cache_mb: Cross-block cache size in MB (default: 4096). Larger = more state in memory.
 # engine_workers: State root worker threads. Recommend: set to vCPU count for max parallelism.
@@ -84,19 +89,61 @@ confidential_compute = true
 name = "op-reth-c3-standard-44-pd-balanced-no-tdx"
 confidential_compute = false
 
+[[vm]]
+name = "c4-standard-192-lssd-no-tdx"
+machine_type = "c4-standard-192-lssd"
+confidential_compute = false
+
 # =============================================================================
 # Reth Configuration (Performance Tuning)
 # =============================================================================
-# Controls execution batch size for checkpoint frequency.
-# Smaller batches = more frequent checkpoint updates = better ETA visibility.
-# Trade-off: ~10-15% slower total sync vs 500K default.
+# Controls batch/commit thresholds for all pipeline stages.
+# These are set to reth's default values for maximum sync performance.
+# Reduce thresholds for more frequent checkpoint updates (better ETA visibility)
+# at the cost of slower total sync time.
 # See docs/PERFORMANCE-TUNING.md for detailed explanations.
 # =============================================================================
 [reth_config]
-batch_size = 10000              # Blocks per execution batch (default: 500000)
-batch_duration = "1m"           # Max duration per batch (default: 10m)
+# Database settings
 db_max_size_gb = 15000          # Maximum database size (15TB)
 db_growth_step_mb = 4096        # Database growth increment (4GB)
+
+# Execution stage thresholds (commits when ANY threshold is hit)
+execution_max_blocks = 500000               # Blocks per batch (reth default: 500000)
+execution_max_changes = 5000000             # State changes per batch (reth default: 5000000)
+execution_max_cumulative_gas = 1500000000000  # Gas per batch (reth default: 1.5T)
+execution_max_duration = "10m"              # Max duration per batch (reth default: 10m)
+
+# Headers stage
+headers_commit_threshold = 10000            # Blocks per commit (reth default: 10000)
+
+# Sender Recovery stage
+sender_recovery_commit_threshold = 5000000  # Transactions per commit (reth default: 5000000)
+
+# Account Hashing stage
+account_hashing_clean_threshold = 500000    # Blocks before full re-hash (reth default: 500000)
+account_hashing_commit_threshold = 100000   # Entities per commit (reth default: 100000)
+
+# Storage Hashing stage
+storage_hashing_clean_threshold = 500000    # Blocks before full re-hash (reth default: 500000)
+storage_hashing_commit_threshold = 100000   # Entities per commit (reth default: 100000)
+
+# Merkle stage
+merkle_incremental_threshold = 7000         # Blocks for incremental mode (reth default: 7000)
+merkle_rebuild_threshold = 100000           # Blocks before full rebuild (reth default: 100000)
+
+# Transaction Lookup stage
+transaction_lookup_chunk_size = 5000000     # Transactions per chunk (reth default: 5000000)
+
+# Index History stages
+index_account_history_commit_threshold = 100000  # Blocks per commit (reth default: 100000)
+index_storage_history_commit_threshold = 100000  # Blocks per commit (reth default: 100000)
+
+# Prune stage
+prune_commit_threshold = 1000000            # Entries per commit (reth default: 1000000)
+
+# ETL (Extract, Transform, Load) settings
+etl_file_size = 524288000                   # File size before flush (reth default: 500MB)
 
 # =============================================================================
 # Golden Snapshot Configuration

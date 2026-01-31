@@ -11,6 +11,9 @@ Group={{ service_group }}
 # Disable ANSI colors for clean log parsing (enables log-based metrics)
 # NO_COLOR=1 doesn't work for reth, use --color never instead
 ExecStart={{ op_reth_bin_path }} node \
+{% if node_mode | default('archive') == 'full' %}
+    --full \
+{% endif %}
     --config {{ op_reth_data_dir }}/reth.toml \
     --chain {{ op_reth_chain }} \
     --color never \
