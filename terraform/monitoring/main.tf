@@ -133,6 +133,81 @@ resource "google_logging_metric" "reth_stage_progress_distribution" {
 }
 
 # -----------------------------------------------------------------------------
+# Log-Based Metric for Real-Time Sync Progress (Committed stage progress logs)
+# -----------------------------------------------------------------------------
+# More frequent than Status logs (~every 1-12s per 1000 blocks).
+# Includes pipeline_stages field (e.g., "3/14") for stage sequence visibility.
+#
+# Log format:
+#   INFO Committed stage progress pipeline_stages=3/14 stage=SenderRecovery checkpoint=40865492 target=41556951 stage_progress=97.11% stage_eta=6m5s
+#
+# Query example:
+#   {__name__="logging.googleapis.com/user/reth_sync_progress", vm_name=~"op-reth.*"}
+# -----------------------------------------------------------------------------
+resource "google_logging_metric" "reth_sync_progress" {
+  name        = "reth_sync_progress"
+  project     = var.project_id
+  description = "Real-time sync progress from Committed stage progress logs"
+
+  filter = <<-EOF
+    resource.type="gce_instance"
+    textPayload=~"Committed stage progress"
+  EOF
+
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+    unit        = "1"
+
+    labels {
+      key         = "vm_name"
+      value_type  = "STRING"
+      description = "VM hostname"
+    }
+    labels {
+      key         = "stage"
+      value_type  = "STRING"
+      description = "Pipeline stage name"
+    }
+    labels {
+      key         = "pipeline_stages"
+      value_type  = "STRING"
+      description = "Current/total stages (e.g., 3/14)"
+    }
+    labels {
+      key         = "checkpoint"
+      value_type  = "STRING"
+      description = "Current block number"
+    }
+    labels {
+      key         = "target"
+      value_type  = "STRING"
+      description = "Target block number"
+    }
+    labels {
+      key         = "stage_progress"
+      value_type  = "STRING"
+      description = "Stage progress percentage"
+    }
+    labels {
+      key         = "stage_eta"
+      value_type  = "STRING"
+      description = "ETA if available, empty otherwise"
+    }
+  }
+
+  label_extractors = {
+    "vm_name"         = "REGEXP_EXTRACT(textPayload, \"\\\\+00:00 ([\\\\w-]+) op-reth\")"
+    "stage"           = "REGEXP_EXTRACT(textPayload, \"stage=(\\\\w+)\")"
+    "pipeline_stages" = "REGEXP_EXTRACT(textPayload, \"pipeline_stages=(\\\\d+/\\\\d+)\")"
+    "checkpoint"      = "REGEXP_EXTRACT(textPayload, \"checkpoint=(\\\\d+)\")"
+    "target"          = "REGEXP_EXTRACT(textPayload, \"target=(\\\\d+)\")"
+    "stage_progress"  = "REGEXP_EXTRACT(textPayload, \"stage_progress=([\\\\d.]+)\")"
+    "stage_eta"       = "REGEXP_EXTRACT(textPayload, \"stage_eta=([\\\\dhms]+)\")"
+  }
+}
+
+# -----------------------------------------------------------------------------
 # Dashboard - Key Performance Metrics by Stage Category (Overview)
 # -----------------------------------------------------------------------------
 # Layout:
@@ -1255,7 +1330,7 @@ locals {
                 timeSeriesQuery = {
                   prometheusQuery = (
                     stage.throughput_type == "progress"
-                    ? "logging_googleapis_com:user:reth_stage_progress_distribution_sum{stage=\"${stage.name}\", ${local.v3_vm_filter}} / logging_googleapis_com:user:reth_stage_progress_distribution_count{stage=\"${stage.name}\", ${local.v3_vm_filter}}"
+                    ? "logging_googleapis_com:user_reth_stage_progress_distribution_sum{stage=\"${stage.name}\", ${local.v3_vm_filter}} / logging_googleapis_com:user_reth_stage_progress_distribution_count{stage=\"${stage.name}\", ${local.v3_vm_filter}}"
                     : stage.throughput_type == "entities"
                     ? "rate(reth_sync_entities_processed{stage=\"${stage.name}\", ${local.v3_vm_filter}}[5m])"
                     : "rate(reth_sync_checkpoint{stage=\"${stage.name}\", ${local.v3_vm_filter}}[5m])"
@@ -1369,4 +1444,93 @@ resource "google_monitoring_dashboard" "reth_benchmark_v3" {
   })
 
   depends_on = [google_project_service.telemetry]
+}
+
+# =============================================================================
+# Sync Status Dashboard - Real-Time Progress from Log-Based Metrics
+# =============================================================================
+# Shows the latest sync status for each VM from Committed stage progress logs.
+# Uses log-based metric labels to display: VM, Stage, Pipeline, Checkpoint,
+# Target, Progress %, ETA.
+#
+# Layout:
+#   Row 1: Sync Status Table (full width, all labels as columns)
+# =============================================================================
+
+locals {
+  sync_status_tiles = [
+    {
+      xPos   = 0
+      yPos   = 0
+      width  = 48
+      height = 24
+      widget = {
+        title = "Real-Time Sync Status (from logs)"
+        timeSeriesTable = {
+          dataSets = [
+            {
+              timeSeriesQuery = {
+                prometheusQuery = "logging_googleapis_com:user_reth_sync_progress{vm_name=~\"op-reth.*\"}"
+              }
+              minAlignmentPeriod = "60s"
+            }
+          ]
+          metricVisualization = "NUMBER"
+          columnSettings = [
+            {
+              column      = "vm_name"
+              visible     = true
+              displayName = "VM"
+            },
+            {
+              column      = "stage"
+              visible     = true
+              displayName = "Stage"
+            },
+            {
+              column      = "pipeline_stages"
+              visible     = true
+              displayName = "Pipeline"
+            },
+            {
+              column      = "checkpoint"
+              visible     = true
+              displayName = "Checkpoint"
+            },
+            {
+              column      = "target"
+              visible     = true
+              displayName = "Target"
+            },
+            {
+              column      = "stage_progress"
+              visible     = true
+              displayName = "Progress %"
+            },
+            {
+              column      = "stage_eta"
+              visible     = true
+              displayName = "ETA"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
+
+resource "google_monitoring_dashboard" "sync_status" {
+  dashboard_json = jsonencode({
+    displayName = "op-reth Sync Status"
+
+    mosaicLayout = {
+      columns = 48
+      tiles   = local.sync_status_tiles
+    }
+  })
+
+  depends_on = [
+    google_project_service.telemetry,
+    google_logging_metric.reth_sync_progress
+  ]
 }

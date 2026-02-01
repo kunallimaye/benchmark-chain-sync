@@ -26,10 +26,10 @@ steps:
         set -e
         echo "=== Downloading inventory from GCS ==="
         mkdir -p ansible/inventory
-        gsutil cp "gs://${_GCS_BUCKET}/ansible/inventory.yml" ansible/inventory/hosts.yml
+        gsutil cp "gs://${_GCS_BUCKET}/ansible/inventory.json" ansible/inventory/hosts.json
         
         echo "Inventory contents:"
-        cat ansible/inventory/hosts.yml
+        cat ansible/inventory/hosts.json
 
   # ---------------------------------------------------------------------------
   # Setup SSH keys via gcloud for OS Login
@@ -100,7 +100,7 @@ steps:
         echo "Running benchmark on VM: ${_VM}"
         
         ansible-playbook \
-          -i inventory/hosts.yml \
+          -i inventory/hosts.json \
           playbooks/run-benchmark.yml \
           --limit=${_VM} \
           --user=$$OSLOGIN_USER \

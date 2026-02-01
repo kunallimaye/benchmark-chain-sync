@@ -11,6 +11,7 @@ region = "us-central1"
 zone = "us-central1-a"
 network = "default"
 gcs_bucket = "base-mainnet-snapshot"
+chain_network = "base-mainnet"  # Blockchain network: base-mainnet or base-sepolia
 
 [l1]
 rpc_endpoint = "https://json-rpc.canwswf5ohsfgrgr5coh6xisi.blockchainnodeengine.com"
@@ -84,6 +85,24 @@ machine_type = "c3-standard-44-lssd"
 confidential_compute = true
 engine_cache_mb = 65536              # 64GB cache (176GB RAM available)
 engine_workers = 44                  # Match vCPU count
+
+[[vm]]
+name = "op-reth-c3-standard-22-pdssd-notdx"
+machine_type = "c3-standard-22"
+storage_type = "pd-ssd"
+disk_size_gb = 3000
+confidential_compute = false
+engine_cache_mb = 65536              # 64GB cache (88GB RAM available)
+engine_workers = 22                  # Match vCPU count
+
+[[vm]]
+name = "op-reth-c3-standard-22-pdssd-tdx"
+machine_type = "c3-standard-22"
+storage_type = "pd-ssd"
+disk_size_gb = 3000
+confidential_compute = true
+engine_cache_mb = 65536              # 64GB cache (88GB RAM available)
+engine_workers = 22                  # Match vCPU count
 
 # =============================================================================
 # Golden Snapshot Configuration

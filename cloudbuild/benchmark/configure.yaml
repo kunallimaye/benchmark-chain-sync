@@ -86,10 +86,10 @@ steps:
         set -e
         echo "=== Downloading inventory from GCS ==="
         mkdir -p ansible/inventory
-        gsutil cp "gs://${_GCS_BUCKET}/ansible/inventory.yml" ansible/inventory/hosts.yml
+        gsutil cp "gs://${_GCS_BUCKET}/ansible/inventory.json" ansible/inventory/hosts.json
         
         echo "Inventory contents:"
-        cat ansible/inventory/hosts.yml
+        cat ansible/inventory/hosts.json
 
   # ---------------------------------------------------------------------------
   # Create and attach temp disks for LSSD machines
@@ -254,7 +254,7 @@ steps:
         fi
         
         ansible-playbook \
-          -i inventory/hosts.yml \
+          -i inventory/hosts.json \
           playbooks/site.yml \
           --forks=${_FORKS} \
           --user=$$OSLOGIN_USER \

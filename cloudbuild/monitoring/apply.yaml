@@ -48,6 +48,36 @@ steps:
         terraform init -input=false
 
   # ---------------------------------------------------------------------------
+  # Import Existing Resources (if not in state)
+  # ---------------------------------------------------------------------------
+  - id: 'terraform-import'
+    name: 'hashicorp/terraform:1.9'
+    dir: 'terraform/monitoring'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        PROJECT_ID=$$(cat /workspace/project_id.txt)
+        
+        echo "=== Importing Existing Metrics (if needed) ==="
+        
+        # Import reth_stage_log_count if not in state
+        if ! terraform state show google_logging_metric.reth_stage_log_count >/dev/null 2>&1; then
+          echo "Importing reth_stage_log_count..."
+          terraform import -var="project_id=$$PROJECT_ID" \
+            google_logging_metric.reth_stage_log_count reth_stage_log_count || true
+        fi
+        
+        # Import reth_stage_progress_distribution if not in state
+        if ! terraform state show google_logging_metric.reth_stage_progress_distribution >/dev/null 2>&1; then
+          echo "Importing reth_stage_progress_distribution..."
+          terraform import -var="project_id=$$PROJECT_ID" \
+            google_logging_metric.reth_stage_progress_distribution reth_stage_progress_distribution || true
+        fi
+        
+        echo "Import complete."
+
+  # ---------------------------------------------------------------------------
   # Terraform Plan/Apply
   # ---------------------------------------------------------------------------
   - id: 'terraform-apply'

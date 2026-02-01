@@ -240,7 +240,135 @@ steps:
         fi
 
   # ---------------------------------------------------------------------------
-  # Upload config to GCS for reference (skip in plan-only mode)
+  # Generate Ansible inventory from config.json and VM IPs
+  # ---------------------------------------------------------------------------
+  - id: 'generate-inventory'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+        
+        if [ "${_PLAN_ONLY}" = "true" ]; then
+          echo "=== Skipping inventory generation (plan-only mode) ==="
+          exit 0
+        fi
+        
+        echo "=== Generating Ansible Inventory ==="
+        
+        # Read values from files created by parse-config step
+        PROJECT_ID=$$(cat /workspace/project_id.txt)
+        ZONE=$$(cat terraform/benchmark/vms.json | python3 -c "import sys,json; vms=json.load(sys.stdin); print(vms[0]['zone'] if vms else 'us-central1-a')")
+        
+        # Get VM IPs and build inventory using jq and gcloud
+        # Read config.json created by parse-config step
+        CONFIG_JSON=$$(cat /workspace/config.json)
+        
+        # Extract values from config
+        GCS_BUCKET=$$(echo "$$CONFIG_JSON" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('project',{}).get('gcs_bucket',''))")
+        NETWORK=$$(echo "$$CONFIG_JSON" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('project',{}).get('chain_network','base-mainnet'))")
+        L1_RPC=$$(echo "$$CONFIG_JSON" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('l1',{}).get('rpc_endpoint',''))")
+        L1_BEACON=$$(echo "$$CONFIG_JSON" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('l1',{}).get('beacon_endpoint',''))")
+        TRACING_ENABLED=$$(echo "$$CONFIG_JSON" | python3 -c "import sys,json; c=json.load(sys.stdin); print(str(c.get('tracing',{}).get('enabled',False)).lower())")
+        TRACING_RATIO=$$(echo "$$CONFIG_JSON" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('tracing',{}).get('sample_ratio',0.01))")
+        TRACING_FILTER=$$(echo "$$CONFIG_JSON" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('tracing',{}).get('filter','info'))")
+        DB_MAX_SIZE_GB=$$(echo "$$CONFIG_JSON" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('reth_config',{}).get('db_max_size_gb',15000))")
+        DB_GROWTH_MB=$$(echo "$$CONFIG_JSON" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('reth_config',{}).get('db_growth_step_mb',4096))")
+        OP_NODE_VERSION=$$(echo "$$CONFIG_JSON" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('build',{}).get('op_node_version','v1.16.5'))")
+        
+        # Calculate byte values
+        DB_MAX_SIZE_BYTES=$$((DB_MAX_SIZE_GB * 1024 * 1024 * 1024))
+        DB_GROWTH_BYTES=$$((DB_GROWTH_MB * 1024 * 1024))
+        
+        # Get defaults
+        DEFAULTS=$$(echo "$$CONFIG_JSON" | python3 -c "import sys,json; c=json.load(sys.stdin); print(json.dumps(c.get('defaults',{}).get('vm',{})))")
+        
+        # Build hosts JSON
+        echo "Building hosts inventory..."
+        HOSTS_JSON="{}"
+        
+        # Get VM list from config.json (already has defaults merged)
+        VMS=$$(echo "$$CONFIG_JSON" | python3 -c "import sys,json; c=json.load(sys.stdin); print(json.dumps(c.get('vm',[])))")
+        VM_COUNT=$$(echo "$$VMS" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))")
+        
+        for i in $$(seq 0 $$((VM_COUNT - 1))); do
+          VM=$$(echo "$$VMS" | python3 -c "import sys,json; vms=json.load(sys.stdin); print(json.dumps(vms[$$i]))")
+          VM_NAME=$$(echo "$$VM" | python3 -c "import sys,json; print(json.load(sys.stdin).get('name',''))")
+          MACHINE_TYPE=$$(echo "$$VM" | python3 -c "import sys,json; print(json.load(sys.stdin).get('machine_type',''))")
+          IS_LSSD=$$(echo "$$MACHINE_TYPE" | grep -q '\-lssd$$' && echo "true" || echo "false")
+          STORAGE_TYPE=$$(echo "$$VM" | python3 -c "import sys,json; print(json.load(sys.stdin).get('storage_type','pd-balanced'))")
+          CONFIDENTIAL=$$(echo "$$VM" | python3 -c "import sys,json; print(str(json.load(sys.stdin).get('confidential_compute',True)).lower())")
+          ENGINE_CACHE=$$(echo "$$VM" | python3 -c "import sys,json; print(json.load(sys.stdin).get('engine_cache_mb',16384))")
+          ENGINE_WORKERS=$$(echo "$$VM" | python3 -c "import sys,json; print(json.load(sys.stdin).get('engine_workers',44))")
+          RETH_VERSION=$$(echo "$$VM" | python3 -c "import sys,json; print(json.load(sys.stdin).get('reth_version','main'))")
+          NODE_MODE=$$(echo "$$VM" | python3 -c "import sys,json; print(json.load(sys.stdin).get('node_mode','full'))")
+          
+          # Get VM IP from gcloud
+          VM_IP=$$(gcloud compute instances describe "$$VM_NAME" \
+            --project="$$PROJECT_ID" \
+            --zone="$$ZONE" \
+            --format="value(networkInterfaces[0].networkIP)" 2>/dev/null || echo "")
+          
+          if [ -z "$$VM_IP" ]; then
+            echo "Warning: Could not get IP for $$VM_NAME, skipping"
+            continue
+          fi
+          
+          echo "  - $$VM_NAME: $$VM_IP"
+          
+          # Use lssd as storage_type for LSSD machines
+          if [ "$$IS_LSSD" = "true" ]; then
+            STORAGE_TYPE="lssd"
+          fi
+          
+          # Add host entry
+          HOST_ENTRY=$$(cat <<EOF
+        {
+          "ansible_host": "$$VM_IP",
+          "ansible_ssh_common_args": "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+          "vm_name": "$$VM_NAME",
+          "machine_type": "$$MACHINE_TYPE",
+          "storage_type": "$$STORAGE_TYPE",
+          "is_lssd_machine": $$IS_LSSD,
+          "confidential_compute": $$CONFIDENTIAL,
+          "engine_cache_mb": $$ENGINE_CACHE,
+          "engine_workers": $$ENGINE_WORKERS,
+          "reth_version": "$$RETH_VERSION",
+          "op_node_version": "$$OP_NODE_VERSION",
+          "node_mode": "$$NODE_MODE"
+        }
+        EOF
+        )
+          HOSTS_JSON=$$(echo "$$HOSTS_JSON" | python3 -c "import sys,json; h=json.load(sys.stdin); h['$$VM_NAME']=json.loads('''$$HOST_ENTRY'''); print(json.dumps(h))")
+        done
+        
+        # Build final inventory
+        cat > /workspace/inventory.json <<EOF
+        {
+          "all": {
+            "hosts": $$HOSTS_JSON,
+            "vars": {
+              "gcs_bucket": "$$GCS_BUCKET",
+              "network": "$$NETWORK",
+              "l1_rpc_endpoint": "$$L1_RPC",
+              "l1_beacon_endpoint": "$$L1_BEACON",
+              "tracing_enabled": $$TRACING_ENABLED,
+              "tracing_sample_ratio": $$TRACING_RATIO,
+              "tracing_filter": "$$TRACING_FILTER",
+              "db_max_size_bytes": $$DB_MAX_SIZE_BYTES,
+              "db_growth_step_bytes": $$DB_GROWTH_BYTES
+            }
+          }
+        }
+        EOF
+        
+        echo ""
+        echo "Generated inventory:"
+        cat /workspace/inventory.json | python3 -c "import sys,json; inv=json.load(sys.stdin); print(f\"  Hosts: {len(inv['all']['hosts'])}\")"
+
+  # ---------------------------------------------------------------------------
+  # Upload config and inventory to GCS (skip in plan-only mode)
   # ---------------------------------------------------------------------------
   - id: 'upload-to-gcs'
     name: 'gcr.io/cloud-builders/gsutil'
@@ -264,6 +392,10 @@ steps:
         # Upload vms.json
         gsutil cp terraform/benchmark/vms.json "gs://${_GCS_BUCKET}/terraform/vms.json"
         echo "VMs: gs://${_GCS_BUCKET}/terraform/vms.json"
+        
+        # Upload Ansible inventory
+        gsutil cp /workspace/inventory.json "gs://${_GCS_BUCKET}/ansible/inventory.json"
+        echo "Inventory: gs://${_GCS_BUCKET}/ansible/inventory.json"
         
         echo ""
         echo "=== Provisioning Complete ==="

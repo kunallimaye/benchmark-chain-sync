@@ -31,3 +31,13 @@ output "dashboard_v3_url" {
   value       = "https://console.cloud.google.com/monitoring/dashboards/builder/${split("/", google_monitoring_dashboard.reth_benchmark_v3.id)[3]}?project=${var.project_id}"
   description = "URL to view the v3 dashboard (per-stage breakdown with 13 stages) in Cloud Console"
 }
+
+output "sync_status_dashboard_id" {
+  value       = google_monitoring_dashboard.sync_status.id
+  description = "Dashboard resource ID (sync status - real-time from logs)"
+}
+
+output "sync_status_dashboard_url" {
+  value       = "https://console.cloud.google.com/monitoring/dashboards/builder/${split("/", google_monitoring_dashboard.sync_status.id)[3]}?project=${var.project_id}"
+  description = "URL to view the Sync Status dashboard (real-time from logs) in Cloud Console"
+}

@@ -84,6 +84,16 @@
     - "{{ op_reth_data_dir }}"
     - "{{ op_node_data_dir }}"
 
+# Fix ownership for snapshot-based disks (pd-ssd, pd-balanced, hyperdisk)
+# Files from snapshot retain original uid/gid - need recursive chown
+# LSSD machines handle this in lssd_copy role with tar --no-same-owner
+- name: Fix data directory ownership for snapshot-based disks
+  shell: |
+    chown -R {{ service_user }}:{{ service_group }} {{ op_reth_data_dir }}
+    chown -R {{ service_user }}:{{ service_group }} {{ op_node_data_dir }}
+  when: not (is_lssd_machine | default(false))
+  changed_when: true
+
 - name: Create log directories
   file:
     path: "{{ item }}"
