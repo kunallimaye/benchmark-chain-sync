@@ -32,14 +32,15 @@ variable "storage_type" {
   type        = string
   default     = null
   nullable    = true
-  description = "Storage type: pd-standard, pd-balanced, pd-ssd, hyperdisk-balanced, hyperdisk-extreme, or null for LSSD machine types."
+  description = "Storage type: pd-standard, pd-balanced, pd-ssd, hyperdisk-balanced, hyperdisk-extreme, or inbuilt-lssd for machines with built-in NVMe."
 
   validation {
     condition = var.storage_type == null ? true : contains([
       "pd-standard", "pd-balanced", "pd-ssd",
-      "hyperdisk-balanced", "hyperdisk-extreme"
+      "hyperdisk-balanced", "hyperdisk-extreme",
+      "inbuilt-lssd"
     ], var.storage_type)
-    error_message = "storage_type must be null (for LSSD), pd-standard, pd-balanced, pd-ssd, hyperdisk-balanced, or hyperdisk-extreme"
+    error_message = "storage_type must be null, pd-standard, pd-balanced, pd-ssd, hyperdisk-balanced, hyperdisk-extreme, or inbuilt-lssd"
   }
 }
 

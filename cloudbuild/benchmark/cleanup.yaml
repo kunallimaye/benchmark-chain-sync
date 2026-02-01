@@ -42,12 +42,8 @@ steps:
         # Merge defaults into each VM
         vms = config.get('vm', [])
         for vm in vms:
-            machine_type = vm.get('machine_type', defaults.get('machine_type', ''))
-            is_lssd = machine_type.endswith('-lssd')
             for key, value in defaults.items():
                 if key not in vm:
-                    if is_lssd and key in ('storage_type', 'disk_size_gb'):
-                        continue
                     vm[key] = value
 
         # Filter: if _VM is set, REMOVE that VM (keep others)

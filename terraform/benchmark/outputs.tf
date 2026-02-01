@@ -14,7 +14,7 @@ output "vms" {
       storage_type         = vm.storage_type
       reth_version         = vm.reth_version
       confidential_compute = vm.confidential_compute
-      is_lssd_machine      = vm.is_lssd_machine
+      has_builtin_lssd     = vm.has_builtin_lssd
       disk_name            = vm.disk_name
     }
   }
@@ -25,12 +25,12 @@ output "vm_names" {
   value       = [for name, vm in module.vm : vm.vm_name]
 }
 
-output "lssd_vms" {
-  description = "List of LSSD VM names (require rsync for data)"
-  value       = [for name, vm in module.vm : vm.vm_name if vm.is_lssd_machine]
+output "builtin_lssd_vms" {
+  description = "List of VM names with built-in local SSD (require rsync for data)"
+  value       = [for name, vm in module.vm : vm.vm_name if vm.has_builtin_lssd]
 }
 
 output "persistent_disk_vms" {
   description = "List of VM names with persistent disks (data from snapshot)"
-  value       = [for name, vm in module.vm : vm.vm_name if !vm.is_lssd_machine]
+  value       = [for name, vm in module.vm : vm.vm_name if !vm.has_builtin_lssd]
 }

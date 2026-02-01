@@ -170,7 +170,7 @@ storage_type = "pd-ssd"
 [[vm]]
 name = "op-reth-c3-standard-44-lssd"
 machine_type = "c3-standard-44-lssd"  # LSSD suffix = built-in NVMe
-# No storage_type or disk_size_gb for LSSD machines
+storage_type = "inbuilt-lssd"         # Built-in NVMe, no disk_size_gb needed
 ```
 
 ### .env (secrets, gitignored)
@@ -263,7 +263,7 @@ The infrastructure supports various storage types for benchmarking:
 | `pd-balanced` | Yes/No | General-purpose SSD (default) |
 | `pd-ssd` | Yes/No | Higher IOPS SSD |
 | `hyperdisk-extreme` | Yes/No | Highest performance (350K IOPS, 5GB/s) |
-| `lssd` | Yes/No | Local NVMe RAID-0 (176 vCPUs, 704GB RAM) |
+| `inbuilt-lssd` | Yes/No | Built-in NVMe RAID-0 (for -lssd and -metal machine types) |
 
 ## Observability
 

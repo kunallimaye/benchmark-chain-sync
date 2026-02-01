@@ -127,7 +127,7 @@ VMs are provisioned from a golden snapshot (created from a fully synced VM):
 | `pd-balanced` | General-purpose SSD | Default, good balance |
 | `pd-ssd` | Higher IOPS SSD | Better random I/O |
 | `hyperdisk-extreme` | Highest performance | Max IOPS/throughput, configurable |
-| `lssd` (machine suffix) | Local NVMe RAID-0 | Lowest latency, no persistence |
+| `inbuilt-lssd` | Built-in NVMe RAID-0 | Lowest latency, no persistence (for -lssd and -metal machines) |
 
 **Hyperdisk requires provisioned IOPS and throughput:**
 ```toml
@@ -292,7 +292,7 @@ This allows the downloader VM to generate signed URLs for GCS objects during sna
 
 6. **API key security** - `L1_API_KEY` should never be in config.toml or committed. Always use `.env` file.
 
-7. **LSSD machine types** - Machines with `-lssd` suffix (e.g., `c3-standard-176-lssd`) have built-in NVMe SSDs. Storage is auto-configured as RAID-0. Do NOT specify `storage_type` or `disk_size_gb` for these machines.
+7. **Built-in local SSD machines** - Machines with `-lssd` or `-metal` suffix (e.g., `c3-standard-176-lssd`, `c3-standard-192-metal`) have built-in NVMe SSDs. Use `storage_type = "inbuilt-lssd"` for these machines. Storage is auto-configured as RAID-0. Do NOT specify `disk_size_gb` for these machines.
 
 8. **Golden snapshot required** - VMs are provisioned from a golden snapshot. Provisioning will fail if no valid snapshot is configured in `config.toml` `[snapshot]` section.
 
@@ -300,7 +300,7 @@ This allows the downloader VM to generate signed URLs for GCS objects during sna
 
 10. **Hyperdisk provisioning** - Hyperdisk types require explicit `provisioned_iops` and `provisioned_throughput` settings.
 
-11. **LSSD rsync** - LSSD machines can't create disks from snapshot directly (ephemeral NVMe). Cloud Build creates a temp disk from snapshot, attaches it, rsyncs data to LSSD RAID, then deletes the temp disk.
+11. **inbuilt-lssd rsync** - Machines with `storage_type = "inbuilt-lssd"` can't create disks from snapshot directly (ephemeral NVMe). Cloud Build creates a temp disk from snapshot, attaches it, rsyncs data to the local SSD RAID, then deletes the temp disk.
 
 11. **PromQL label matching** - When combining metrics from different sources (e.g., `op_node_*` and `reth_*`), use `on(vm_name)` modifier for arithmetic operations. Labels must match explicitly or PromQL returns no data.
     ```promql

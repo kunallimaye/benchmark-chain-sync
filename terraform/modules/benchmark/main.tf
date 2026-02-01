@@ -10,8 +10,9 @@ data "google_compute_image" "vm_image" {
 
 # Startup script to format and mount disks
 locals {
-  # Detect if machine type has built-in local SSD (ends with -lssd)
-  is_lssd_machine = endswith(var.machine_type, "-lssd")
+  # Detect if using built-in local SSD (explicit storage type)
+  # This covers both -lssd and -metal machine types that have NVMe SSDs
+  has_builtin_lssd = var.storage_type == "inbuilt-lssd"
 
   # Detect if using Hyperdisk (ternary to handle null before startswith)
   is_hyperdisk = var.storage_type != null ? startswith(var.storage_type, "hyperdisk-") : false
@@ -20,11 +21,11 @@ locals {
   # hyperdisk-balanced and hyperdisk-throughput support both
   is_hyperdisk_extreme = var.storage_type == "hyperdisk-extreme"
 
-  # Only create persistent disk if NOT LSSD machine
-  create_persistent_disk = !local.is_lssd_machine && var.storage_type != null
+  # Only create persistent disk if NOT using built-in local SSD
+  create_persistent_disk = !local.has_builtin_lssd && var.storage_type != null
 
   # Storage type for labels (handle null case)
-  storage_type_label = local.is_lssd_machine ? "lssd" : coalesce(var.storage_type, "none")
+  storage_type_label = local.has_builtin_lssd ? "lssd" : coalesce(var.storage_type, "none")
 
   # Snapshot self-link for creating disk from snapshot
   snapshot_self_link = var.snapshot_name != "" ? "projects/${var.project_id}/global/snapshots/${var.snapshot_name}" : null
@@ -35,7 +36,7 @@ locals {
     
     MOUNT_POINT="${var.mount_point}"
     MACHINE_TYPE="${var.machine_type}"
-    STORAGE_TYPE="${coalesce(var.storage_type, "lssd")}"
+    STORAGE_TYPE="${coalesce(var.storage_type, "none")}"
     
     echo "=== Disk Setup Script ==="
     echo "Machine type: $MACHINE_TYPE"
@@ -50,8 +51,8 @@ locals {
     if mount | grep -q "$MOUNT_POINT"; then
         echo "Data disk already mounted at $MOUNT_POINT"
     else
-        # Detect LSSD machine (ends with -lssd)
-        if [[ "$MACHINE_TYPE" == *-lssd ]]; then
+        # Detect built-in local SSD (inbuilt-lssd storage type)
+        if [[ "$STORAGE_TYPE" == "inbuilt-lssd" ]]; then
             echo "=== LSSD Machine Detected - Setting up RAID-0 ==="
             
             # Wait for NVMe devices to appear
@@ -223,9 +224,9 @@ resource "google_compute_instance" "vm" {
   }
 
   # TDX requires TERMINATE on host maintenance
-  # LSSD machines also require TERMINATE (local SSDs don't survive live migration)
+  # Machines with built-in local SSDs also require TERMINATE (local SSDs don't survive live migration)
   scheduling {
-    on_host_maintenance = var.confidential_compute || local.is_lssd_machine ? "TERMINATE" : "MIGRATE"
+    on_host_maintenance = var.confidential_compute || local.has_builtin_lssd ? "TERMINATE" : "MIGRATE"
     automatic_restart   = true
   }
 
@@ -233,8 +234,11 @@ resource "google_compute_instance" "vm" {
     initialize_params {
       image = data.google_compute_image.vm_image.self_link
       size  = 100  # Boot disk size in GB
-      # C4 machines require hyperdisk-balanced for boot disk
-      type  = startswith(var.machine_type, "c4-") ? "hyperdisk-balanced" : "pd-balanced"
+      # C4 machines and C3 metal machines require hyperdisk-balanced for boot disk
+      type = (
+        startswith(var.machine_type, "c4-") ||
+        endswith(var.machine_type, "-metal")
+      ) ? "hyperdisk-balanced" : "pd-balanced"
     }
   }
 
@@ -274,9 +278,9 @@ resource "google_compute_instance" "vm" {
   # Allow the instance to be replaced if needed
   allow_stopping_for_update = true
 
-  # Ignore scratch_disk changes - LSSD machines have built-in local SSDs
-  # that appear in Terraform state but aren't defined in config.
-  # Without this, Terraform would try to recreate LSSD VMs on every apply.
+  # Ignore scratch_disk changes - machines with built-in local SSDs (inbuilt-lssd)
+  # have NVMe drives that appear in Terraform state but aren't defined in config.
+  # Without this, Terraform would try to recreate these VMs on every apply.
   lifecycle {
     ignore_changes = [scratch_disk]
   }

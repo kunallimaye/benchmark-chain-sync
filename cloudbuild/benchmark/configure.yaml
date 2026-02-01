@@ -42,11 +42,8 @@ steps:
 
         # Merge defaults into each VM
         for vm in vms:
-            machine_type = vm.get('machine_type', defaults.get('machine_type', ''))
             for key, value in defaults.items():
                 if key not in vm:
-                    if machine_type.endswith('-lssd') and key in ('storage_type', 'disk_size_gb'):
-                        continue
                     vm[key] = value
 
         # Filter to specific VM if _VM is set
@@ -54,13 +51,13 @@ steps:
         if vm_filter:
             vms = [vm for vm in vms if vm.get('name') == vm_filter]
 
-        # Find LSSD machines that need temp disk
-        lssd_vms = [vm for vm in vms if vm.get('machine_type', '').endswith('-lssd')]
+        # Find VMs with built-in local SSD that need temp disk for data copy
+        lssd_vms = [vm for vm in vms if vm.get('storage_type') == 'inbuilt-lssd']
         
         print(f"Snapshot: {snapshot.get('name')}")
         print(f"Project: {project.get('project_id')}")
         print(f"Zone: {project.get('zone')}")
-        print(f"LSSD VMs that need temp disk: {[vm.get('name') for vm in lssd_vms]}")
+        print(f"VMs with built-in local SSD (may need temp disk): {[vm.get('name') for vm in lssd_vms]}")
 
         # Write config for subsequent steps
         with open('/workspace/snapshot_name.txt', 'w') as f:

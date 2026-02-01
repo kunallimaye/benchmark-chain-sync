@@ -43,16 +43,16 @@ steps:
         # Merge defaults into each VM
         vms = config.get('vm', [])
         for vm in vms:
-            # Check if this is an LSSD machine type
-            machine_type = vm.get('machine_type', defaults.get('machine_type', ''))
-            is_lssd = machine_type.endswith('-lssd')
-            
             for key, value in defaults.items():
                 if key not in vm:
-                    # Don't apply storage_type or disk_size_gb defaults for LSSD machines
-                    if is_lssd and key in ('storage_type', 'disk_size_gb'):
-                        continue
                     vm[key] = value
+            
+            # Check if this uses built-in local SSD storage
+            has_builtin_lssd = vm.get('storage_type') == 'inbuilt-lssd'
+            
+            # Don't apply disk_size_gb for inbuilt-lssd (uses built-in NVMe)
+            if has_builtin_lssd and 'disk_size_gb' in vm and vm.get('disk_size_gb') == defaults.get('disk_size_gb'):
+                del vm['disk_size_gb']
 
         # Filter to specific VM if _VM is set
         vm_filter = '${_VM}'
@@ -76,16 +76,16 @@ steps:
         for vm in vms:
             machine_type = vm.get('machine_type')
             storage_type = vm.get('storage_type')
-            is_lssd = machine_type and machine_type.endswith('-lssd')
+            has_builtin_lssd = storage_type == 'inbuilt-lssd'
             confidential = vm.get('confidential_compute', True)
             print(f"  {vm.get('name')}:")
             print(f"    machine_type: {machine_type}")
-            print(f"    storage_type: {storage_type or 'lssd (built-in)'}")
+            print(f"    storage_type: {storage_type}")
             print(f"    confidential_compute: {confidential}")
             if storage_type and storage_type.startswith('hyperdisk'):
                 print(f"    provisioned_iops: {vm.get('provisioned_iops')}")
                 print(f"    provisioned_throughput: {vm.get('provisioned_throughput')}")
-            if not is_lssd and storage_type:
+            if not has_builtin_lssd:
                 print(f"    disk_size_gb: {vm.get('disk_size_gb')}")
             print(f"    reth_version: {vm.get('reth_version')}")
 
@@ -296,8 +296,8 @@ steps:
           VM=$$(echo "$$VMS" | python3 -c "import sys,json; vms=json.load(sys.stdin); print(json.dumps(vms[$$i]))")
           VM_NAME=$$(echo "$$VM" | python3 -c "import sys,json; print(json.load(sys.stdin).get('name',''))")
           MACHINE_TYPE=$$(echo "$$VM" | python3 -c "import sys,json; print(json.load(sys.stdin).get('machine_type',''))")
-          IS_LSSD=$$(echo "$$MACHINE_TYPE" | grep -q '\-lssd$$' && echo "true" || echo "false")
           STORAGE_TYPE=$$(echo "$$VM" | python3 -c "import sys,json; print(json.load(sys.stdin).get('storage_type','pd-balanced'))")
+          IS_LSSD=$$([ "$$STORAGE_TYPE" = "inbuilt-lssd" ] && echo "true" || echo "false")
           CONFIDENTIAL=$$(echo "$$VM" | python3 -c "import sys,json; print(str(json.load(sys.stdin).get('confidential_compute',True)).lower())")
           ENGINE_CACHE=$$(echo "$$VM" | python3 -c "import sys,json; print(json.load(sys.stdin).get('engine_cache_mb',16384))")
           ENGINE_WORKERS=$$(echo "$$VM" | python3 -c "import sys,json; print(json.load(sys.stdin).get('engine_workers',44))")
@@ -317,9 +317,10 @@ steps:
           
           echo "  - $$VM_NAME: $$VM_IP"
           
-          # Use lssd as storage_type for LSSD machines
+          # Use lssd as display storage_type for inbuilt-lssd
+          DISPLAY_STORAGE_TYPE="$$STORAGE_TYPE"
           if [ "$$IS_LSSD" = "true" ]; then
-            STORAGE_TYPE="lssd"
+            DISPLAY_STORAGE_TYPE="lssd"
           fi
           
           # Add host entry
@@ -329,7 +330,7 @@ steps:
           "ansible_ssh_common_args": "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
           "vm_name": "$$VM_NAME",
           "machine_type": "$$MACHINE_TYPE",
-          "storage_type": "$$STORAGE_TYPE",
+          "storage_type": "$$DISPLAY_STORAGE_TYPE",
           "is_lssd_machine": $$IS_LSSD,
           "confidential_compute": $$CONFIDENTIAL,
           "engine_cache_mb": $$ENGINE_CACHE,

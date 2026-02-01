@@ -75,6 +75,7 @@ engine_workers = 44              # Set to vCPU count (c3-standard-44 = 44 vCPUs)
 [[vm]]
 name = "op-reth-c3-standard-44-lssd-notdx"
 machine_type = "c3-standard-44-lssd"
+storage_type = "inbuilt-lssd"        # Built-in NVMe SSDs (RAID-0)
 confidential_compute = false
 engine_cache_mb = 65536              # 64GB cache (176GB RAM available)
 engine_workers = 44                  # Match vCPU count
@@ -82,9 +83,18 @@ engine_workers = 44                  # Match vCPU count
 [[vm]]
 name = "op-reth-c3-standard-44-lssd-tdx"
 machine_type = "c3-standard-44-lssd"
+storage_type = "inbuilt-lssd"        # Built-in NVMe SSDs (RAID-0)
 confidential_compute = true
 engine_cache_mb = 65536              # 64GB cache (176GB RAM available)
 engine_workers = 44                  # Match vCPU count
+
+[[vm]]
+name = "op-reth-c3-standard-192-metal"
+machine_type = "c3-standard-192-metal"
+storage_type = "inbuilt-lssd"        # Built-in NVMe SSDs (RAID-0)
+confidential_compute = false
+engine_cache_mb = 131072             # 128GB cache (768GB RAM available)
+engine_workers = 192                 # Match vCPU count
 
 [[vm]]
 name = "op-reth-c3-standard-22-pdssd-notdx"

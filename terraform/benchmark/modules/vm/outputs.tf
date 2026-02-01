@@ -23,7 +23,7 @@ output "zone" {
 }
 
 output "disk_name" {
-  description = "Name of the data disk (null for local-ssd or LSSD machine types)"
+  description = "Name of the data disk (null for inbuilt-lssd storage types)"
   value       = local.create_persistent_disk ? google_compute_disk.data[0].name : null
 }
 
@@ -47,7 +47,7 @@ output "confidential_compute" {
   value       = var.confidential_compute
 }
 
-output "is_lssd_machine" {
-  description = "Whether this is an LSSD machine (requires rsync for data)"
-  value       = local.is_lssd_machine
+output "has_builtin_lssd" {
+  description = "Whether this uses built-in local SSD (requires rsync for data)"
+  value       = local.has_builtin_lssd
 }
