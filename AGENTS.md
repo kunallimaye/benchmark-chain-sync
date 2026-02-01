@@ -183,10 +183,21 @@ Subsections use:
 - Only pass substitutions that are actually used in the template
 
 ### Makefile Conventions
+**IMPORTANT:** Keep Makefile minimal (~75 lines). All logic lives in `scripts/` folder.
+
+- Makefile is a thin wrapper - only calls scripts with arguments
 - Targets use kebab-case: `create-l1`, `list-vms`
-- Use `## Comment` after target for help text
-- Load config from TOML: `$(shell grep ... config.toml | cut -d'"' -f2)`
 - Use `-include .env` to load secrets
+- Pass variables to scripts: `@./scripts/provision.sh "$(VM)" "$(WAIT)"`
+
+### Scripts Conventions (`scripts/` folder)
+- All scripts source `scripts/common.sh` for shared functions
+- Use `scripts/config.py` for TOML parsing (not grep/cut)
+- Start with `set -euo pipefail` for fail-fast
+- Use helper functions: `info()`, `warn()`, `error()`, `die()`, `confirm()`
+- Use `load_config` to set PROJECT_ID, ZONE, GCS_BUCKET, etc.
+- Use `cfg <path>` to get config values: `cfg project.project_id`
+- Use `submit_build` / `submit_build_async` for Cloud Build
 
 ### Naming Conventions
 - VM names: User-defined in `config.toml` `[[vm]]` `name` field
@@ -384,9 +395,24 @@ See `docs/ETA-CALC.md` for comprehensive guide on:
 .
 ├── config.toml              # Main configuration (VMs, L1 endpoints, build settings)
 ├── .env                     # Secrets (L1_API_KEY, gitignored)
-├── Makefile                 # Orchestration (all make targets)
+├── Makefile                 # Thin wrapper (~75 lines) - calls scripts/
 ├── AGENTS.md                # This file - developer/AI reference
 ├── README.md                # User-facing documentation
+├── SESSION.md               # Session context for AI agents
+├── scripts/                 # All Makefile logic lives here
+│   ├── config.py            # TOML parser (Python 3.11+)
+│   ├── common.sh            # Shared functions (logging, config, etc.)
+│   ├── help.sh              # Help text
+│   ├── l1-*.sh              # L1 BNE operations
+│   ├── build-*.sh           # Build binaries
+│   ├── snapshot-*.sh        # Snapshot management
+│   ├── provision.sh         # Provision VMs
+│   ├── configure.sh         # Configure VMs
+│   ├── benchmark.sh         # Run benchmark
+│   ├── cleanup.sh           # Destroy VMs
+│   ├── status*.sh           # Status commands
+│   ├── list-*.sh            # List commands
+│   └── apply-*.sh           # Foundation/monitoring
 ├── docs/
 │   ├── PERFORMANCE-TUNING.md        # Comprehensive performance tuning guide
 │   ├── ETA-CALC.md                  # ETA calculation for sync stages

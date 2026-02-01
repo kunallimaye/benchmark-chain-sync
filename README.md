@@ -18,126 +18,114 @@ Infrastructure-as-code for benchmarking op-reth performance on GCP:
 
 ## Architecture
 
+VMs are provisioned from a **golden snapshot** containing a synced op-reth database:
+
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                        SHARED DOWNLOAD DISK                                  │
-│   ┌─────────────────────────────────────────────┐                           │
-│   │  op-reth-snapshot-download (8TB pd-balanced)│                           │
-│   │  /snapshot.tar.zst                          │                           │
-│   │  Downloaded once, shared read-only          │                           │
-│   └───────────────────┬─────────────────────────┘                           │
-│                       │                                                      │
-│         ┌─────────────┼─────────────┬─────────────┐                         │
-│         ▼             ▼             ▼             ▼                         │
-│   ┌───────────┐ ┌───────────┐ ┌───────────┐ ┌───────────┐                   │
-│   │ VM 1      │ │ VM 2      │ │ VM 3      │ │ VM 4      │                   │
-│   │ pd-balanced│ │ pd-ssd    │ │ hyperdisk │ │ lssd      │                   │
-│   │ TDX       │ │ TDX       │ │ TDX       │ │ 176 vCPU  │                   │
-│   └─────┬─────┘ └─────┬─────┘ └─────┬─────┘ └─────┬─────┘                   │
-│         │             │             │             │                         │
-│         └─────────────┴──────┬──────┴─────────────┘                         │
-│                              ▼                                              │
-│                    ┌─────────────────┐                                      │
-│                    │  BNE (L1 Node)  │                                      │
-│                    │  - JSON-RPC     │                                      │
-│                    │  - Beacon API   │                                      │
-│                    └─────────────────┘                                      │
-└─────────────────────────────────────────────────────────────────────────────┘
+│                    Golden Snapshot: op-reth-pruned-2026-01-31               │
+│                    Created from synced VM, ~1.4TB compressed                │
+└───────────────────────────────┬─────────────────────────────────────────────┘
+                                │
+              ┌─────────────────┼─────────────────────────────────┐
+              │                 │                                 │
+              ▼                 ▼                                 ▼
+    ┌─────────────────┐   ┌─────────────────┐           ┌─────────────────┐
+    │ pd-balanced     │   │ pd-ssd          │           │ LSSD machine    │
+    │ Create disk     │   │ Create disk     │           │                 │
+    │ from snapshot   │   │ from snapshot   │           │ 1. Create temp  │
+    │ (~10-15 min)    │   │ (~10-15 min)    │           │    disk from    │
+    │                 │   │                 │           │    snapshot     │
+    │ Data ready!     │   │ Data ready!     │           │ 2. rsync to LSSD│
+    └─────┬───────────┘   └─────┬───────────┘           │ 3. Delete temp  │
+          │                     │                       └─────┬───────────┘
+          │                     │                             │
+          └─────────────────────┴──────┬──────────────────────┘
+                                       ▼
+                             ┌─────────────────┐
+                             │  BNE (L1 Node)  │
+                             │  - JSON-RPC     │
+                             │  - Beacon API   │
+                             └─────────────────┘
 ```
 
 ## Prerequisites
 
 - GCP project with required APIs enabled
 - `gcloud` CLI configured with project access
-- Access to the snapshot GCS bucket
+- Golden snapshot available (see `make list-snapshots`)
 
 **For detailed setup instructions (Cloud Build permissions, Manual IAM setup), see [AGENTS.md](AGENTS.md#prerequisites-for-development).**
 
 ## Quick Start
 
-### 1. Create L1 BNE Node (One-time)
+### 1. One-Time Setup
 
 ```bash
-# Create Blockchain Node Engine node (takes days to sync!)
+# Create L1 BNE node (takes days to sync!)
 make create-l1
 
-# Check sync status
-make status-l1
-```
-
-### 2. Configure Secrets
-
-Create API key in GCP Console (APIs & Services > Credentials) after BNE syncs:
-
-```bash
-# Create .env file with API key
+# After BNE syncs, create API key in GCP Console
+# APIs & Services > Credentials > Create API Key
 echo "L1_API_KEY=your-api-key" > .env
+
+# Build binaries
+make build-reth
+make build-op-node
 ```
 
-### 3. Build Binaries
+### 2. Configure VMs
 
-```bash
-make build-reth      # Build op-reth from source
-make build-op-node   # Build op-node (extract from Docker)
-```
-
-### 4. Create Shared Download Disk (One-time)
-
-```bash
-# Create the shared 8TB download disk
-make create-download-disk
-
-# Download snapshot to shared disk (2-3 hours)
-make download
-
-# Monitor download progress
-make download-status
-```
-
-### 5. Configure VMs in config.toml
-
-Edit `config.toml` to define VM instances:
+Edit `config.toml`:
 
 ```toml
-[download]
-snapshot_url = "gs://base-mainnet-snapshot/base-mainnet-reth-1768474496.tar.zst"
-disk_name = "op-reth-snapshot-download"
-disk_size_gb = 8000
-disk_type = "pd-balanced"
+[project]
+project_id = "your-project-id"
+chain_network = "base-mainnet"  # Blockchain network name
+
+[snapshot]
+name = "op-reth-pruned-2026-01-31"  # Golden snapshot to use
+disk_size_gb = 3000
 
 [[vm]]
-name = "op-reth-c3-standard-44-pd-balanced"
-reth_version = "6df249c"
-# No snapshot_url here - uses shared download disk
+name = "my-benchmark-vm"
+machine_type = "c3-standard-44"
+storage_type = "pd-ssd"
+disk_size_gb = 3000
+confidential_compute = true  # Enable TDX
 ```
 
-### 6. Provision and Configure
+### 3. Provision and Configure
 
 ```bash
-# Create VM infrastructure (attaches download disk read-only)
-make provision VM=op-reth-c3-standard-44-pd-balanced
+# Create VMs (creates disks from snapshot, auto-generates inventory)
+make provision
 
-# Configure VM (extracts snapshot from shared disk, starts services)
-make configure VM=op-reth-c3-standard-44-pd-balanced
+# Configure VMs (installs binaries, starts services)
+make configure
 
-# Monitor extraction progress
-make configure-status VM=op-reth-c3-standard-44-pd-balanced
+# Check overall status
+make status
 ```
 
-### 7. Run Benchmark
+### 4. Monitor Progress
 
 ```bash
-# After extraction completes and services start
-make benchmark VM=op-reth-c3-standard-44-pd-balanced
+# SSH to a specific VM
+gcloud compute ssh VM_NAME --project=PROJECT --zone=ZONE -- \
+  -o Hostname=nic0.VM_NAME.ZONE.c.PROJECT.internal.gcpnode.com
+
+# On the VM: check services
+sudo systemctl status op-reth op-node
+sudo journalctl -u op-reth -n 20
 ```
 
-### 8. Cleanup
+**Dashboard:** https://console.cloud.google.com/monitoring/dashboards?project=YOUR_PROJECT
+
+### 5. Cleanup
 
 ```bash
-make cleanup VM=op-reth-c3-standard-44-pd-balanced
-
-# To delete the shared download disk (optional)
-make delete-download-disk
+make cleanup              # Destroy all VMs
+make cleanup VM=<name>    # Destroy specific VM
 ```
 
 ## Configuration
@@ -149,7 +137,8 @@ make delete-download-disk
 project_id = "your-project-id"
 region = "us-central1"
 zone = "us-central1-a"
-network = "base-mainnet"
+network = "default"              # GCP VPC network
+chain_network = "base-mainnet"   # Blockchain network (base-mainnet or base-sepolia)
 gcs_bucket = "base-mainnet-snapshot"
 
 [l1]
@@ -161,28 +150,27 @@ reth_repo = "https://github.com/paradigmxyz/reth.git"
 reth_branch = "main"
 op_node_version = "v1.16.5"
 
-[download]
-snapshot_url = "gs://bucket/snapshot.tar.zst"
-disk_name = "op-reth-snapshot-download"
-disk_size_gb = 8000
-disk_type = "pd-balanced"
-downloader_machine_type = "n2-standard-8"
+[snapshot]
+name = "op-reth-pruned-2026-01-31"  # Golden snapshot name
+disk_size_gb = 3000                  # Target disk size for new VMs
 
 [defaults.vm]
-disk_size_gb = 15000
+disk_size_gb = 3000
 machine_type = "c3-standard-44"
 storage_type = "pd-balanced"
-confidential_compute = true
+confidential_compute = true          # Enable TDX
+node_mode = "full"                   # "full" (pruned) or "archive"
+engine_cache_mb = 16384              # Cross-block cache size
+engine_workers = 44                  # State root workers (match vCPU count)
 
 [[vm]]
-name = "op-reth-c3-standard-44-pd-balanced"
-reth_version = "6df249c"
+name = "op-reth-c3-standard-44-pdssd"
+storage_type = "pd-ssd"
 
 [[vm]]
-name = "op-reth-c3-standard-44-hyperdisk-tdx"
-storage_type = "hyperdisk-extreme"
-provisioned_iops = 350000
-provisioned_throughput = 5000
+name = "op-reth-c3-standard-44-lssd"
+machine_type = "c3-standard-44-lssd"  # LSSD suffix = built-in NVMe
+# No storage_type or disk_size_gb for LSSD machines
 ```
 
 ### .env (secrets, gitignored)
@@ -205,74 +193,64 @@ make destroy-l1                  # Destroy BNE node
 make build-reth                  # Build op-reth binary
 make build-op-node               # Build op-node (extract from Docker)
 
-# Shared Download Disk
-make create-download-disk        # Create shared download disk (one-time)
-make download                    # Download snapshot to disk (~2-3 hours)
-make download-status             # Check download progress
-make delete-download-disk        # Delete download disk (with confirmation)
+# Golden Snapshot Management
+make list-snapshots              # List available golden snapshots
+make create-snapshot VM=<name>   # Create snapshot from synced VM
+make delete-snapshot SNAPSHOT=<name>  # Delete old snapshot
 
 # Provision & Configure
-make provision                   # Create all VMs
+make provision                   # Create all VMs (+ auto-generate inventory)
 make provision VM=<name>         # Create specific VM
-make configure                   # Configure all VMs (parallel extraction!)
+make configure                   # Configure all VMs (install binaries, start services)
 make configure VM=<name>         # Configure specific VM
 
 # Status & Monitoring
-make status                      # Show builds, VMs, L1, download disk status
+make status                      # Show builds, VMs, L1, snapshot status
 make list-vms                    # List VMs in config.toml
 make list-instances              # List active Terraform instances
-make configure-status VM=<name>  # SSH to VM, show extraction progress
-make extract-status VM=<name>    # Alias for configure-status
+make configure-status VM=<name>  # Check VM configuration status
 
 # Benchmark
 make benchmark VM=<name>         # Run benchmark on VM
 
 # Cleanup
-make cleanup                     # Destroy all VMs (keeps download disk)
+make cleanup                     # Destroy all VMs
 make cleanup VM=<name>           # Destroy specific VM
 ```
 
-## Shared Download Disk Workflow
+## Golden Snapshot Workflow
 
-The snapshot is downloaded once to a shared disk, then extracted to each VM in parallel:
+VMs are provisioned from a **golden snapshot** - a GCP disk snapshot containing a synced op-reth database.
 
-1. **Create download disk** (`make create-download-disk`) - 8TB pd-balanced disk
-2. **Download snapshot** (`make download`) - Creates temp VM, downloads with aria2c, destroys VM
-3. **Provision VMs** (`make provision`) - Creates VMs with download disk attached read-only
-4. **Configure VMs** (`make configure`) - Extracts snapshot from shared disk to each VM's data disk
+### How It Works
+
+**For persistent disk VMs (pd-balanced, pd-ssd, hyperdisk):**
+- Disk is created directly from snapshot (~10-15 min)
+- Data is immediately available when VM starts
+
+**For LSSD machines (NVMe):**
+- Ephemeral NVMe cannot be created from snapshot
+- Cloud Build creates a temp pd-balanced disk from snapshot
+- Ansible rsyncs data from temp disk to LSSD RAID (~20-30 min)
+- Temp disk is automatically deleted
 
 ### Benefits
-- Download once, extract many times
-- Parallel extraction on all VMs
-- No per-VM download = faster provisioning
-- Easy to add new VMs anytime
+- Fast provisioning: ~15 min for persistent disks
+- No download phase: snapshot lives in GCP
+- Parallel: all VMs provision simultaneously
+- Easy updates: create new snapshot from any synced VM
 
-### Monitor Progress
+### Snapshot Management
 
 ```bash
-# Check download progress (while downloading)
-make download-status
+# List available snapshots
+make list-snapshots
 
-# Check extraction progress on a VM
-make configure-status VM=op-reth-c3-standard-44-pd-balanced
+# Create new snapshot from a synced VM
+make create-snapshot VM=op-reth-synced-vm
 
-# Or manually SSH
-gcloud compute ssh <vm-name> --zone=us-central1-a \
-  --command='cat /mnt/data/.extract-status'
-```
-
-### Status Files
-
-**Download status** (on download disk): `/mnt/download/.download-status`
-```json
-{"stage": "downloading", "progress": "47%", "timestamp": "..."}
-{"stage": "complete", "progress": "100%", "timestamp": "..."}
-```
-
-**Extract status** (on each VM): `/mnt/data/.extract-status`
-```json
-{"stage": "extracting", "progress": "23%", "timestamp": "..."}
-{"stage": "ready", "progress": "100%", "timestamp": "..."}
+# Delete old snapshot
+make delete-snapshot SNAPSHOT=op-reth-golden-old
 ```
 
 ## VM Types
