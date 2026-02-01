@@ -131,25 +131,34 @@ locals {
 
   # Stage definitions for dashboard
   # Each stage gets a row with Throughput, Checkpoint, and ETA tables
-  # 
-  # Metric strategy per stage:
-  #   - Most stages: rate(reth_sync_checkpoint) for throughput
-  #   - MerkleExecute: Use stage_progress distribution metric for real-time progress
-  #   - StorageHashing: Shows 0 during batch (no real-time metric available)
+  #
+  # throughput_type:
+  #   - "checkpoint": rate(reth_sync_checkpoint) - blocks/s
+  #   - "entities": rate(reth_sync_entities_processed) - entities/s
+  #   - "progress": stage_progress distribution mean - shows progress %
+  #
+  # eta_type:
+  #   - "entity": Uses entities_total/entities_processed (more accurate)
+  #   - "checkpoint": Uses L2_tip/checkpoint (for stages without entities_total)
+  #
+  # Stages with entities_total > 0: Headers, Bodies, SenderRecovery, Execution,
+  #   AccountHashing, StorageHashing, MerkleExecute, TransactionLookup
+  # Stages with entities_total = 0: MerkleUnwind, IndexStorageHistory,
+  #   IndexAccountHistory, Prune, Finish
   stages = [
-    { num = "01", name = "Headers", throughput_type = "checkpoint" },
-    { num = "02", name = "Bodies", throughput_type = "checkpoint" },
-    { num = "03", name = "SenderRecovery", throughput_type = "checkpoint" },
-    { num = "04", name = "Execution", throughput_type = "entities" },
-    { num = "05", name = "MerkleUnwind", throughput_type = "checkpoint" },
-    { num = "06", name = "AccountHashing", throughput_type = "entities" },
-    { num = "07", name = "StorageHashing", throughput_type = "checkpoint" },
-    { num = "08", name = "MerkleExecute", throughput_type = "progress" },
-    { num = "09", name = "TransactionLookup", throughput_type = "checkpoint" },
-    { num = "10", name = "IndexStorageHistory", throughput_type = "checkpoint" },
-    { num = "11", name = "IndexAccountHistory", throughput_type = "checkpoint" },
-    { num = "12", name = "Prune", throughput_type = "checkpoint" },
-    { num = "13", name = "Finish", throughput_type = "checkpoint" },
+    { num = "01", name = "Headers",              throughput_type = "checkpoint", eta_type = "entity" },
+    { num = "02", name = "Bodies",               throughput_type = "checkpoint", eta_type = "entity" },
+    { num = "03", name = "SenderRecovery",       throughput_type = "checkpoint", eta_type = "entity" },
+    { num = "04", name = "Execution",            throughput_type = "entities",   eta_type = "entity" },
+    { num = "05", name = "MerkleUnwind",         throughput_type = "checkpoint", eta_type = "checkpoint" },
+    { num = "06", name = "AccountHashing",       throughput_type = "entities",   eta_type = "entity" },
+    { num = "07", name = "StorageHashing",       throughput_type = "checkpoint", eta_type = "entity" },
+    { num = "08", name = "MerkleExecute",        throughput_type = "progress",   eta_type = "entity" },
+    { num = "09", name = "TransactionLookup",    throughput_type = "checkpoint", eta_type = "entity" },
+    { num = "10", name = "IndexStorageHistory",  throughput_type = "checkpoint", eta_type = "checkpoint" },
+    { num = "11", name = "IndexAccountHistory",  throughput_type = "checkpoint", eta_type = "checkpoint" },
+    { num = "12", name = "Prune",                throughput_type = "checkpoint", eta_type = "checkpoint" },
+    { num = "13", name = "Finish",               throughput_type = "checkpoint", eta_type = "checkpoint" },
   ]
 
   # Generate tiles for each stage (3 widgets per stage: Throughput, Checkpoint, ETA)
@@ -233,6 +242,10 @@ locals {
         }
       },
       # ETA table (right)
+      # Uses entity-based or checkpoint-based calculation depending on stage
+      # - Active stages (rate > 0.001): Show valid ETA in hours
+      # - Inactive/Completed stages: Show -9999 (indicates "Not Available")
+      # Uses boolean math: ETA * is_active + (-9999 * is_inactive)
       {
         xPos   = 32
         yPos   = 8 + (idx * 20)
@@ -244,9 +257,13 @@ locals {
             dataSets = [
               {
                 timeSeriesQuery = {
-                  # ETA = blocks_remaining / (blocks_per_second * 3600)
-                  # Uses on(vm_name) to match labels between op_node and reth metrics
-                  prometheusQuery = "(op_node_default_refs_number{layer=\"l2\",type=\"l2_unsafe\"} - on(vm_name) reth_sync_checkpoint{stage=\"${stage.name}\", ${local.vm_filter}}) / on(vm_name) (rate(reth_sync_checkpoint{stage=\"${stage.name}\", ${local.vm_filter}}[15m]) * 3600)"
+                  prometheusQuery = (
+                    stage.eta_type == "entity"
+                    # Entity-based ETA: (ETA * is_active) + (-9999 * is_inactive)
+                    ? "(((reth_sync_entities_total{stage=\"${stage.name}\", ${local.vm_filter}} - reth_sync_entities_processed{stage=\"${stage.name}\", ${local.vm_filter}}) / (rate(reth_sync_entities_processed{stage=\"${stage.name}\", ${local.vm_filter}}[15m]) * 3600)) * (rate(reth_sync_entities_processed{stage=\"${stage.name}\", ${local.vm_filter}}[15m]) > bool 0.001)) + ((-9999) * (rate(reth_sync_entities_processed{stage=\"${stage.name}\", ${local.vm_filter}}[15m]) <= bool 0.001))"
+                    # Checkpoint-based ETA: (ETA * is_active) + (-9999 * is_inactive)
+                    : "(((op_node_default_refs_number{layer=\"l2\",type=\"l2_unsafe\"} - on(vm_name) reth_sync_checkpoint{stage=\"${stage.name}\", ${local.vm_filter}}) / on(vm_name) clamp_min(rate(reth_sync_checkpoint{stage=\"${stage.name}\", ${local.vm_filter}}[15m]), 0.0001) / 3600) * on(vm_name) (rate(reth_sync_checkpoint{stage=\"${stage.name}\", ${local.vm_filter}}[15m]) > bool 0.001)) + on(vm_name) ((-9999) * (rate(reth_sync_checkpoint{stage=\"${stage.name}\", ${local.vm_filter}}[15m]) <= bool 0.001))"
+                  )
                 }
                 minAlignmentPeriod = "60s"
               }

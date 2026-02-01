@@ -38,6 +38,7 @@ make configure VM=<name>      # Configure specific VM
 
 # Status and monitoring
 make status                   # Show builds, VMs, L1, snapshot status
+make sync-status              # Show latest sync progress for each VM (from logs)
 make status-l1                # Check BNE node sync status
 make list-vms                 # List VMs in config.toml
 make list-instances           # List active Terraform-managed instances

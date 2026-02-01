@@ -206,6 +206,7 @@ make configure VM=<name>         # Configure specific VM
 
 # Status & Monitoring
 make status                      # Show builds, VMs, L1, snapshot status
+make sync-status                 # Show latest sync progress for each VM (from logs)
 make list-vms                    # List VMs in config.toml
 make list-instances              # List active Terraform instances
 make configure-status VM=<name>  # Check VM configuration status
