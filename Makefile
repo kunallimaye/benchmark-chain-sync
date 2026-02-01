@@ -20,7 +20,7 @@ RETH_COMMIT ?=
 .PHONY: help create-l1 destroy-l1 status-l1 build-reth build-op-node \
         create-snapshot list-snapshots delete-snapshot \
         provision provision-plan configure benchmark cleanup \
-        status configure-status build-status benchmark-status \
+        status configure-status build-status benchmark-status sync-status \
         list-vms list-instances apply-foundation apply-monitoring \
         validate-config validate-terraform
 
@@ -60,6 +60,7 @@ status:           ; @./scripts/status.sh
 configure-status: ; @./scripts/status-vm.sh "$(VM)"
 build-status:     ; @./scripts/status-build.sh "$(TYPE)"
 benchmark-status: ; @./scripts/status-build.sh benchmark
+sync-status:      ; @./scripts/sync-status.sh
 list-vms:         ; @./scripts/list-vms.sh
 list-instances:   ; @./scripts/list-instances.sh
 

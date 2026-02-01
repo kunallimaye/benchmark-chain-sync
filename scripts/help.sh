@@ -31,6 +31,7 @@ Targets:
 
   Status & Monitoring:
     status                Show current build artifacts and infrastructure
+    sync-status           Show latest sync progress for each VM (from logs)
     configure-status      Show configure/sync status for a VM (requires VM=name)
     build-status          Show status of most recent build (requires TYPE=...)
     benchmark-status      Show status of most recent benchmark build
