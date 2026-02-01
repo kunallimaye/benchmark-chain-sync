@@ -88,11 +88,142 @@ steps:
         mkdir -p ansible/inventory
         gsutil cp "gs://${_GCS_BUCKET}/ansible/inventory.json" ansible/inventory/hosts.json
         
-        echo "Inventory contents:"
-        cat ansible/inventory/hosts.json
+        echo "Inventory downloaded successfully"
+        # Show host count without exposing secrets
+        python3 -c "import json; inv=json.load(open('ansible/inventory/hosts.json')); print(f'  Hosts: {len(inv[\"all\"][\"hosts\"])}')"
 
   # ---------------------------------------------------------------------------
-  # Create and attach temp disks for LSSD machines
+  # Setup SSH keys via gcloud for OS Login
+  # (Moved before LSSD check so we can SSH to VMs to check for existing data)
+  # ---------------------------------------------------------------------------
+  - id: 'setup-ssh'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+        
+        echo "=== Setting up SSH keys for OS Login ==="
+        
+        # Clean up old SSH keys to avoid profile size limit (32 KiB)
+        echo "Cleaning up old SSH keys..."
+        OLD_KEYS=$$(gcloud compute os-login describe-profile --format=json 2>/dev/null | \
+          python3 -c "import sys,json; d=json.load(sys.stdin); keys=d.get('sshPublicKeys',{}); print(' '.join(list(keys.keys())[:-3]) if len(keys)>3 else '')" 2>/dev/null || echo "")
+        
+        for KEY_FP in $$OLD_KEYS; do
+          echo "  Removing old key: $$KEY_FP"
+          gcloud compute os-login ssh-keys remove --key=$$KEY_FP 2>/dev/null || true
+        done
+        
+        # Generate SSH key pair if not exists
+        mkdir -p /root/.ssh
+        if [ ! -f /root/.ssh/google_compute_engine ]; then
+          ssh-keygen -t rsa -b 4096 -f /root/.ssh/google_compute_engine -N "" -q
+        fi
+        
+        # Add SSH key to OS Login
+        gcloud compute os-login ssh-keys add --key-file=/root/.ssh/google_compute_engine.pub --project=${_PROJECT_ID}
+        
+        # Get the OS Login username
+        OSLOGIN_USER=$$(gcloud compute os-login describe-profile --format='value(posixAccounts[0].username)')
+        echo "OS Login user: $$OSLOGIN_USER"
+        echo "$$OSLOGIN_USER" > /workspace/oslogin_user.txt
+        
+        # Copy keys to workspace for next step
+        cp /root/.ssh/google_compute_engine /workspace/
+        cp /root/.ssh/google_compute_engine.pub /workspace/
+        chmod 600 /workspace/google_compute_engine
+        
+        echo "SSH keys configured"
+
+  # ---------------------------------------------------------------------------
+  # Check which LSSD machines need data (skip temp disk if data already exists)
+  # ---------------------------------------------------------------------------
+  - id: 'check-lssd-data'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        set -e
+        
+        LSSD_VMS=$$(cat /workspace/lssd_vms.json)
+        OSLOGIN_USER=$$(cat /workspace/oslogin_user.txt)
+        
+        echo "=== Checking LSSD machines for existing data ==="
+        
+        # If no LSSD VMs, write empty array and exit
+        if [ "$$LSSD_VMS" = "[]" ]; then
+          echo "No LSSD VMs to check"
+          echo "[]" > /workspace/lssd_vms_need_data.json
+          exit 0
+        fi
+        
+        # Setup SSH key
+        mkdir -p /root/.ssh
+        cp /workspace/google_compute_engine /root/.ssh/
+        chmod 600 /root/.ssh/google_compute_engine
+        
+        # Read inventory to get VM IPs
+        INVENTORY=$$(cat ansible/inventory/hosts.json)
+        
+        python3 -c "
+        import json
+        import subprocess
+        
+        lssd_vms = json.loads('$$LSSD_VMS')
+        inventory = json.loads('''$$INVENTORY''')
+        hosts = inventory.get('all', {}).get('hosts', {})
+        oslogin_user = '$$OSLOGIN_USER'
+        
+        vms_need_data = []
+        
+        for vm in lssd_vms:
+            vm_name = vm['name']
+            host_info = hosts.get(vm_name, {})
+            vm_ip = host_info.get('ansible_host', '')
+            
+            if not vm_ip:
+                print(f'  {vm_name}: No IP found in inventory - assuming needs data')
+                vms_need_data.append(vm)
+                continue
+            
+            print(f'Checking {vm_name} ({vm_ip})...')
+            
+            # SSH to check if mdbx.dat exists
+            try:
+                result = subprocess.run([
+                    'ssh', '-o', 'StrictHostKeyChecking=no', 
+                    '-o', 'UserKnownHostsFile=/dev/null',
+                    '-o', 'ConnectTimeout=10',
+                    '-i', '/root/.ssh/google_compute_engine',
+                    f'{oslogin_user}@{vm_ip}',
+                    'test -f /mnt/data/op-reth/db/mdbx.dat'
+                ], capture_output=True, timeout=30)
+                
+                if result.returncode == 0:
+                    print(f'  {vm_name}: Data EXISTS - skipping temp disk creation')
+                else:
+                    print(f'  {vm_name}: Data NOT found - needs temp disk')
+                    vms_need_data.append(vm)
+            except subprocess.TimeoutExpired:
+                print(f'  {vm_name}: SSH timeout - assuming needs data')
+                vms_need_data.append(vm)
+            except Exception as e:
+                print(f'  {vm_name}: SSH error ({e}) - assuming needs data')
+                vms_need_data.append(vm)
+        
+        # Write VMs that need data
+        with open('/workspace/lssd_vms_need_data.json', 'w') as f:
+            json.dump(vms_need_data, f)
+        
+        print(f'')
+        print(f'Summary: {len(vms_need_data)} of {len(lssd_vms)} LSSD VMs need temp disk')
+        "
+
+  # ---------------------------------------------------------------------------
+  # Create and attach temp disks for LSSD machines that need data
   # ---------------------------------------------------------------------------
   - id: 'create-lssd-temp-disks'
     name: 'gcr.io/cloud-builders/gcloud'
@@ -106,11 +237,18 @@ steps:
         ZONE=$$(cat /workspace/zone.txt)
         SNAPSHOT_NAME=$$(cat /workspace/snapshot_name.txt)
         SNAPSHOT_DISK_SIZE=$$(cat /workspace/snapshot_disk_size_gb.txt)
-        LSSD_VMS=$$(cat /workspace/lssd_vms.json)
+        LSSD_VMS=$$(cat /workspace/lssd_vms_need_data.json)
         
-        echo "=== Creating temp disks for LSSD machines ==="
+        echo "=== Creating temp disks for LSSD machines that need data ==="
+        
+        # If no VMs need data, skip
+        if [ "$$LSSD_VMS" = "[]" ]; then
+          echo "All LSSD VMs already have data - skipping temp disk creation"
+          exit 0
+        fi
+        
         echo "Snapshot: $$SNAPSHOT_NAME"
-        echo "LSSD VMs: $$LSSD_VMS"
+        echo "LSSD VMs needing data: $$LSSD_VMS"
         
         # Parse JSON array using python
         python3 -c "
@@ -174,50 +312,6 @@ steps:
         "
 
   # ---------------------------------------------------------------------------
-  # Setup SSH keys via gcloud for OS Login
-  # ---------------------------------------------------------------------------
-  - id: 'setup-ssh'
-    name: 'gcr.io/cloud-builders/gcloud'
-    entrypoint: 'bash'
-    args:
-      - '-c'
-      - |
-        set -e
-        
-        echo "=== Setting up SSH keys for OS Login ==="
-        
-        # Clean up old SSH keys to avoid profile size limit (32 KiB)
-        echo "Cleaning up old SSH keys..."
-        OLD_KEYS=$$(gcloud compute os-login describe-profile --format=json 2>/dev/null | \
-          python3 -c "import sys,json; d=json.load(sys.stdin); keys=d.get('sshPublicKeys',{}); print(' '.join(list(keys.keys())[:-3]) if len(keys)>3 else '')" 2>/dev/null || echo "")
-        
-        for KEY_FP in $$OLD_KEYS; do
-          echo "  Removing old key: $$KEY_FP"
-          gcloud compute os-login ssh-keys remove --key=$$KEY_FP 2>/dev/null || true
-        done
-        
-        # Generate SSH key pair if not exists
-        mkdir -p /root/.ssh
-        if [ ! -f /root/.ssh/google_compute_engine ]; then
-          ssh-keygen -t rsa -b 4096 -f /root/.ssh/google_compute_engine -N "" -q
-        fi
-        
-        # Add SSH key to OS Login
-        gcloud compute os-login ssh-keys add --key-file=/root/.ssh/google_compute_engine.pub --project=${_PROJECT_ID}
-        
-        # Get the OS Login username
-        OSLOGIN_USER=$$(gcloud compute os-login describe-profile --format='value(posixAccounts[0].username)')
-        echo "OS Login user: $$OSLOGIN_USER"
-        echo "$$OSLOGIN_USER" > /workspace/oslogin_user.txt
-        
-        # Copy keys to workspace for next step
-        cp /root/.ssh/google_compute_engine /workspace/
-        cp /root/.ssh/google_compute_engine.pub /workspace/
-        chmod 600 /workspace/google_compute_engine
-        
-        echo "SSH keys configured"
-
-  # ---------------------------------------------------------------------------
   # Run Ansible Playbook
   # ---------------------------------------------------------------------------
   - id: 'ansible-configure'
@@ -267,7 +361,7 @@ steps:
         echo "=== Configuration Complete ==="
 
   # ---------------------------------------------------------------------------
-  # Detach and delete temp disks for LSSD machines
+  # Detach and delete temp disks for LSSD machines (only those that were created)
   # ---------------------------------------------------------------------------
   - id: 'cleanup-lssd-temp-disks'
     name: 'gcr.io/cloud-builders/gcloud'
@@ -279,9 +373,15 @@ steps:
         
         PROJECT_ID=$$(cat /workspace/project_id.txt)
         ZONE=$$(cat /workspace/zone.txt)
-        LSSD_VMS=$$(cat /workspace/lssd_vms.json)
+        LSSD_VMS=$$(cat /workspace/lssd_vms_need_data.json)
         
         echo "=== Cleaning up temp disks for LSSD machines ==="
+        
+        # If no VMs needed data, no disks to clean up
+        if [ "$$LSSD_VMS" = "[]" ]; then
+          echo "No temp disks were created - nothing to clean up"
+          exit 0
+        fi
         
         python3 -c "
         import json

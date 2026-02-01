@@ -357,7 +357,8 @@ steps:
               "tracing_sample_ratio": $$TRACING_RATIO,
               "tracing_filter": "$$TRACING_FILTER",
               "db_max_size_bytes": $$DB_MAX_SIZE_BYTES,
-              "db_growth_step_bytes": $$DB_GROWTH_BYTES
+              "db_growth_step_bytes": $$DB_GROWTH_BYTES,
+              "l1_api_key": "${_L1_API_KEY}"
             }
           }
         }
@@ -405,6 +406,7 @@ substitutions:
   _GCS_BUCKET: 'base-mainnet-snapshot'
   _VM: ''          # Optional: filter to specific VM name
   _PLAN_ONLY: ''   # Optional: set to 'true' for dry-run (plan only, no apply)
+  _L1_API_KEY: ''  # Required: API key for BNE access (from .env)
 
 options:
   logging: CLOUD_LOGGING_ONLY
