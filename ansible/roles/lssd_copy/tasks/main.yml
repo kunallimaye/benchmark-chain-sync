@@ -106,6 +106,13 @@
       debug:
         msg: "mdbx.dat copy completed successfully"
 
+    # Fix ownership for all files (tar extracts as root with --no-same-owner)
+    - name: Fix ownership of all copied files
+      shell: |
+        chown -R {{ service_user }}:{{ service_group }} {{ mount_point }}/op-reth
+        chown -R {{ service_user }}:{{ service_group }} {{ mount_point }}/op-node
+      changed_when: true
+
     - name: Unmount snapshot disk
       mount:
         path: "{{ snapshot_mount_point }}"
