@@ -2,6 +2,20 @@
 # =============================================================================
 # op-node Role - Install and configure op-node
 # =============================================================================
+# This role is idempotent and safe to run on operational VMs:
+# - Checks if service is running before making changes
+# - Fails if config/binary changes would affect running service (unless force_restart)
+# - Only restarts when explicitly requested via force_restart variable
+# =============================================================================
+
+# -------------------------------------------------------------------------
+# Check current state
+# -------------------------------------------------------------------------
+- name: Check if op-node service is running
+  command: systemctl is-active op-node
+  register: op_node_running
+  changed_when: false
+  failed_when: false
 
 - name: Create op-node log directory
   file:
@@ -17,6 +31,9 @@
   changed_when: false
   failed_when: false
 
+# -------------------------------------------------------------------------
+# Install binary
+# -------------------------------------------------------------------------
 - name: Download op-node binary from GCS
   command: >
     gsutil cp "gs://{{ gcs_bucket }}/builds/{{ op_node_artifact_name }}" "{{ op_node_bin_path }}"
@@ -39,36 +56,80 @@
   debug:
     msg: "{{ op_node_version_output.stdout }}"
 
+# -------------------------------------------------------------------------
+# Deploy configuration
+# -------------------------------------------------------------------------
 - name: Deploy op-node systemd service
   template:
     src: op-node.service.j2
     dest: /etc/systemd/system/op-node.service
     mode: '0644'
-  register: op_node_service_deployed
+  register: op_node_service_changed
 
-- name: Reload systemd after service deployment
+- name: Reload systemd if service file changed
   systemd:
     daemon_reload: yes
-  when: op_node_service_deployed.changed
+  when: op_node_service_changed.changed
 
-# Only enable and start service when start_services is true
-# When start_services is false, configure-finish.service will enable and start after snapshot download
+# -------------------------------------------------------------------------
+# Handle changes on running service
+# -------------------------------------------------------------------------
+- name: Set config_changed fact
+  set_fact:
+    op_node_config_changed: "{{ (op_node_binary_downloaded.changed | default(false)) or op_node_service_changed.changed }}"
+
+- name: Fail if config/binary changed on running service (requires FORCE)
+  fail:
+    msg: |
+      ============================================================
+      ERROR: op-node configuration changed but service is running
+      ============================================================
+      
+      VM: {{ vm_name }}
+      
+      Changed:
+      {% if op_node_binary_downloaded.changed | default(false) %}  - op-node binary (new version)
+      {% endif %}
+      {% if op_node_service_changed.changed %}  - op-node.service
+      {% endif %}
+      
+      Restarting would interrupt the running sync.
+      
+      Options:
+        1. Run with FORCE=true to restart the service:
+           make configure FORCE=true
+        
+        2. Manually restart later when convenient:
+           sudo systemctl restart op-node
+      
+      ============================================================
+  when:
+    - op_node_running.rc == 0
+    - op_node_config_changed
+    - not (force_restart | default(false))
+
+- name: Restart op-node (FORCE mode - config/binary changed)
+  systemd:
+    name: op-node
+    state: restarted
+  when:
+    - op_node_running.rc == 0
+    - op_node_config_changed
+    - force_restart | default(false)
+
+- name: Restart op-node (FORCE mode - forced restart even without changes)
+  systemd:
+    name: op-node
+    state: restarted
+  when:
+    - op_node_running.rc == 0
+    - not op_node_config_changed
+    - force_restart | default(false)
+
+# -------------------------------------------------------------------------
+# Enable service (always)
+# -------------------------------------------------------------------------
 - name: Enable op-node service
   systemd:
     name: op-node
     enabled: yes
-  when: start_services | default(true)
-
-- name: Start op-node service
-  systemd:
-    name: op-node
-    state: started
-  when: start_services | default(true)
-
-- name: Restart op-node if binary was updated
-  systemd:
-    name: op-node
-    state: restarted
-  when: 
-    - start_services | default(true)
-    - op_node_binary_downloaded.changed | default(false)

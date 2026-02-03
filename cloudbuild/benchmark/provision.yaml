@@ -184,7 +184,11 @@ steps:
         terraform init -input=false
 
   # ---------------------------------------------------------------------------
-  # Terraform Plan/Apply
+  # Terraform Plan/Apply with Replacement Detection
+  # ---------------------------------------------------------------------------
+  # Always runs plan first to detect destructive changes.
+  # If any resources would be replaced (deleted+created), blocks unless FORCE=true.
+  # This protects against accidental VM recreation which causes data loss on LSSD.
   # ---------------------------------------------------------------------------
   - id: 'terraform-apply'
     name: 'hashicorp/terraform:1.9'
@@ -211,33 +215,64 @@ steps:
           echo "Using default compute service account: $$SERVICE_ACCOUNT"
         fi
         
+        # Build common TF vars
+        TF_VARS="-var=project_id=$$PROJECT_ID -var=region=$$REGION -var=network=$$NETWORK"
+        TF_VARS="$$TF_VARS -var=snapshot_name=$$SNAPSHOT_NAME -var=snapshot_disk_size_gb=$$SNAPSHOT_DISK_SIZE_GB"
+        TF_VARS="$$TF_VARS -var=reth_version=$$RETH_VERSION -var=service_account_email=$$SERVICE_ACCOUNT"
+        
+        echo "=== Running Terraform Plan ==="
+        terraform plan -out=tfplan $$TF_VARS
+        
+        # Check for replacements (destructive changes)
+        echo ""
+        echo "=== Checking for destructive changes ==="
+        terraform show -json tfplan > plan.json
+        
+        # Use jq to find resources with both 'delete' and 'create' actions (replacements)
+        # jq is available in the terraform image
+        REPLACEMENTS=$$(cat plan.json | jq -r '
+          .resource_changes[]? |
+          select(.change.actions | (contains(["delete"]) and contains(["create"]))) |
+          .address
+        ' 2>/dev/null || echo "")
+        
+        if [ -n "$$REPLACEMENTS" ]; then
+          echo ""
+          echo "============================================================"
+          echo "ERROR: The following resources would be REPLACED:"
+          echo "============================================================"
+          echo "$$REPLACEMENTS"
+          echo ""
+          echo "Replacing VMs will cause:"
+          echo "  - VM downtime"
+          echo "  - Data loss on LSSD machines (must re-rsync from snapshot)"
+          echo ""
+          
+          if [ "${_FORCE}" != "true" ]; then
+            echo "To proceed, run: make provision FORCE=true"
+            echo "============================================================"
+            exit 1
+          else
+            echo "FORCE=true specified - proceeding with replacement"
+            echo "============================================================"
+          fi
+        else
+          echo "No destructive changes detected."
+        fi
+        
         if [ "${_PLAN_ONLY}" = "true" ]; then
-          echo "=== Terraform Plan (dry-run) ==="
-          terraform plan \
-            -var="project_id=$$PROJECT_ID" \
-            -var="region=$$REGION" \
-            -var="network=$$NETWORK" \
-            -var="snapshot_name=$$SNAPSHOT_NAME" \
-            -var="snapshot_disk_size_gb=$$SNAPSHOT_DISK_SIZE_GB" \
-            -var="reth_version=$$RETH_VERSION" \
-            -var="service_account_email=$$SERVICE_ACCOUNT"
           echo ""
           echo "=== Plan complete (no changes applied) ==="
-        else
-          echo "=== Applying Terraform ==="
-          terraform apply -auto-approve \
-            -var="project_id=$$PROJECT_ID" \
-            -var="region=$$REGION" \
-            -var="network=$$NETWORK" \
-            -var="snapshot_name=$$SNAPSHOT_NAME" \
-            -var="snapshot_disk_size_gb=$$SNAPSHOT_DISK_SIZE_GB" \
-            -var="reth_version=$$RETH_VERSION" \
-            -var="service_account_email=$$SERVICE_ACCOUNT"
-          
-          echo ""
-          echo "=== Terraform Outputs ==="
-          terraform output -json
+          exit 0
         fi
+        
+        echo ""
+        echo "=== Applying Terraform ==="
+        terraform apply tfplan
+        
+        echo ""
+        echo "=== Terraform Outputs ==="
+        terraform output -json
 
   # ---------------------------------------------------------------------------
   # Generate Ansible inventory from config.json and VM IPs
@@ -259,7 +294,7 @@ steps:
         
         # Read values from files created by parse-config step
         PROJECT_ID=$$(cat /workspace/project_id.txt)
-        ZONE=$$(cat terraform/benchmark/vms.json | python3 -c "import sys,json; vms=json.load(sys.stdin); print(vms[0]['zone'] if vms else 'us-central1-a')")
+        DEFAULT_ZONE=$$(cat terraform/benchmark/vms.json | python3 -c "import sys,json; vms=json.load(sys.stdin); print(vms[0]['zone'] if vms else 'us-central1-a')")
         
         # Get VM IPs and build inventory using jq and gcloud
         # Read config.json created by parse-config step
@@ -303,11 +338,12 @@ steps:
           ENGINE_WORKERS=$$(echo "$$VM" | python3 -c "import sys,json; print(json.load(sys.stdin).get('engine_workers',44))")
           RETH_VERSION=$$(echo "$$VM" | python3 -c "import sys,json; print(json.load(sys.stdin).get('reth_version','main'))")
           NODE_MODE=$$(echo "$$VM" | python3 -c "import sys,json; print(json.load(sys.stdin).get('node_mode','full'))")
+          VM_ZONE=$$(echo "$$VM" | python3 -c "import sys,json; print(json.load(sys.stdin).get('zone','$$DEFAULT_ZONE'))")
           
-          # Get VM IP from gcloud
+          # Get VM IP from gcloud (using per-VM zone)
           VM_IP=$$(gcloud compute instances describe "$$VM_NAME" \
             --project="$$PROJECT_ID" \
-            --zone="$$ZONE" \
+            --zone="$$VM_ZONE" \
             --format="value(networkInterfaces[0].networkIP)" 2>/dev/null || echo "")
           
           if [ -z "$$VM_IP" ]; then
@@ -315,7 +351,7 @@ steps:
             continue
           fi
           
-          echo "  - $$VM_NAME: $$VM_IP"
+          echo "  - $$VM_NAME: $$VM_IP (zone: $$VM_ZONE)"
           
           # Use lssd as display storage_type for inbuilt-lssd
           DISPLAY_STORAGE_TYPE="$$STORAGE_TYPE"
@@ -329,6 +365,7 @@ steps:
           "ansible_host": "$$VM_IP",
           "ansible_ssh_common_args": "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
           "vm_name": "$$VM_NAME",
+          "zone": "$$VM_ZONE",
           "machine_type": "$$MACHINE_TYPE",
           "storage_type": "$$DISPLAY_STORAGE_TYPE",
           "is_lssd_machine": $$IS_LSSD,
@@ -407,6 +444,7 @@ substitutions:
   _GCS_BUCKET: 'base-mainnet-snapshot'
   _VM: ''          # Optional: filter to specific VM name
   _PLAN_ONLY: ''   # Optional: set to 'true' for dry-run (plan only, no apply)
+  _FORCE: ''       # Optional: set to 'true' to allow VM recreation
   _L1_API_KEY: ''  # Required: API key for BNE access (from .env)
 
 options:

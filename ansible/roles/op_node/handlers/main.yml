@@ -1,10 +1,12 @@
 ---
 # =============================================================================
-# op-node Handlers
+# op-node Handlers - DEPRECATED
 # =============================================================================
-# Note: These handlers are no longer notified directly.
-# Systemd reload is done inline in tasks when needed.
-# Restart is only done when start_services is true.
+# Service restart logic is now handled inline in tasks/main.yml to properly
+# check service state and respect the force_restart variable.
+#
+# These handlers are kept for backwards compatibility but should not be
+# notified. If you see these handlers being called, check tasks/main.yml.
 # =============================================================================
 
 - name: Reload systemd
@@ -12,7 +14,5 @@
     daemon_reload: yes
 
 - name: Restart op-node
-  systemd:
-    name: op-node
-    state: restarted
-  when: start_services | default(true)
+  debug:
+    msg: "WARNING: Restart handler called but is deprecated. Restart logic is now in tasks/main.yml"

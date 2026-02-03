@@ -26,23 +26,29 @@ make build-reth               # Build op-reth binary
 make build-op-node            # Build op-node binary (extract from Docker)
 
 # Golden snapshot management
-make list-snapshots           # List available golden snapshots
-make create-snapshot VM=<name> # Create golden snapshot from synced VM
-make delete-snapshot SNAPSHOT=<name>  # Delete old snapshot
+make snapshot-list            # List available golden snapshots
+make snapshot-create VM=<name> # Create golden snapshot from synced VM
+make snapshot-delete SNAPSHOT=<name>  # Delete old snapshot
 
-# Provision and configure VMs
-make provision                # Create all VMs from config.toml (disks from snapshot)
-make provision VM=<name>      # Create specific VM
-make configure                # Configure all VMs (LSSD: rsync from temp disk)
+# Provision VMs (with safety checks)
+make provision-plan           # Preview what Terraform would change (dry-run)
+make provision                # Apply (BLOCKS if VMs would be recreated)
+make provision FORCE=true     # Force apply (allows VM recreation)
+make provision VM=<name>      # Create/update specific VM
+
+# Configure VMs (with safety checks)
+make configure-plan           # Preview what Ansible would change (dry-run)
+make configure                # Apply (FAILS if running services would be affected)
+make configure FORCE=true     # Force apply (restarts services if config changed)
 make configure VM=<name>      # Configure specific VM
 
 # Status and monitoring
 make status                   # Show builds, VMs, L1, snapshot status
 make sync-status              # Show latest sync progress for each VM (from logs)
-make status-l1                # Check BNE node sync status
+make l1-status                # Check BNE node sync status
 make list-vms                 # List VMs in config.toml
 make list-instances           # List active Terraform-managed instances
-make configure-status VM=<name>  # Check VM status
+make status-vm VM=<name>      # Check specific VM status
 make build-status TYPE=<type> # Show status of any build type
 
 # Cleanup
@@ -57,6 +63,47 @@ gcloud compute ssh INSTANCE_NAME --project=PROJECT_ID --zone=ZONE -- \
 gcloud compute ssh c4-standard-192-lssd-no-tdx --project=bct-prod-c3-tdx-3 --zone=us-central1-a -- \
   -o Hostname=nic0.c4-standard-192-lssd-no-tdx.us-central1-a.c.bct-prod-c3-tdx-3.internal.gcpnode.com
 ```
+
+## Safety Features
+
+### Terraform: Prevent Unintended VM Recreation
+
+`make provision` uses a plan-first workflow that detects destructive changes:
+
+1. **Always runs `terraform plan` first** to analyze changes
+2. **Checks for resource replacements** (delete + create actions)
+3. **BLOCKS if any VM would be recreated** - prevents accidental data loss on LSSD machines
+4. **Requires `FORCE=true`** to proceed with recreation
+
+```bash
+# Safe workflow
+make provision              # Blocks: "ERROR: VM 'xyz' would be REPLACED"
+make provision FORCE=true   # Proceeds with recreation
+```
+
+The `ignore_changes` lifecycle rule also prevents unwanted recreation from:
+- Ubuntu boot disk image updates
+- Scratch disk changes on LSSD machines
+
+### Ansible: Prevent Unintended Service Restarts
+
+`make configure` checks service state before making changes:
+
+1. **Checks if op-reth/op-node services are running**
+2. **Deploys config files regardless** (templates are always updated)
+3. **FAILS if config changed AND service is running** - prevents sync interruption
+4. **Requires `FORCE=true`** to restart services
+
+```bash
+# Safe workflow
+make configure              # Fails: "ERROR: op-reth config changed but service running"
+make configure FORCE=true   # Restarts services with new config
+```
+
+**Key Ansible role changes:**
+- Handlers are deprecated - restart logic is inline in tasks
+- Roles check `op_reth_running.rc == 0` before restarting
+- `force_restart` variable (set via `FORCE=true`) enables restarts
 
 ## Configuration Files
 
@@ -168,7 +215,8 @@ Subsections use:
 - Role structure: `tasks/main.yml`, `handlers/main.yml`, `defaults/main.yml`, `templates/`
 - Use `{{ variable }}` Jinja2 syntax
 - Task names should be descriptive sentences
-- Use `notify` + handlers for service restarts
+- **Handlers are deprecated** - restart logic is inline in tasks
+- Roles should check service state before restarting (see `op_reth` role for pattern)
 
 ### Cloud Build YAML Conventions
 - Step IDs use kebab-case: `'terraform-init'`, `'upload-to-gcs'`
@@ -292,7 +340,7 @@ This allows the downloader VM to generate signed URLs for GCS objects during sna
 
 6. **API key security** - `L1_API_KEY` should never be in config.toml or committed. Always use `.env` file.
 
-7. **Built-in local SSD machines** - Machines with `-lssd` or `-metal` suffix (e.g., `c3-standard-176-lssd`, `c3-standard-192-metal`) have built-in NVMe SSDs. Use `storage_type = "inbuilt-lssd"` for these machines. Storage is auto-configured as RAID-0. Do NOT specify `disk_size_gb` for these machines.
+7. **Built-in local SSD machines** - Only machines with `-lssd` suffix (e.g., `c3-standard-44-lssd`) have built-in NVMe SSDs. The `-metal` suffix does NOT include local SSDs. Use `storage_type = "inbuilt-lssd"` for `-lssd` machines only. Storage is auto-configured as RAID-0. Do NOT specify `disk_size_gb` for these machines.
 
 8. **Golden snapshot required** - VMs are provisioned from a golden snapshot. Provisioning will fail if no valid snapshot is configured in `config.toml` `[snapshot]` section.
 
@@ -396,24 +444,21 @@ See `docs/ETA-CALC.md` for comprehensive guide on:
 .
 ├── config.toml              # Main configuration (VMs, L1 endpoints, build settings)
 ├── .env                     # Secrets (L1_API_KEY, gitignored)
-├── Makefile                 # Thin wrapper (~75 lines) - calls scripts/
+├── Makefile                 # Thin wrapper - calls scripts/
 ├── AGENTS.md                # This file - developer/AI reference
 ├── README.md                # User-facing documentation
 ├── SESSION.md               # Session context for AI agents
-├── scripts/                 # All Makefile logic lives here
+├── scripts/                 # All Makefile logic lives here (consolidated)
+│   ├── common.sh            # Shared functions (logging, config, flag parsing)
 │   ├── config.py            # TOML parser (Python 3.11+)
-│   ├── common.sh            # Shared functions (logging, config, etc.)
 │   ├── help.sh              # Help text
-│   ├── l1-*.sh              # L1 BNE operations
-│   ├── build-*.sh           # Build binaries
-│   ├── snapshot-*.sh        # Snapshot management
-│   ├── provision.sh         # Provision VMs
-│   ├── configure.sh         # Configure VMs
-│   ├── benchmark.sh         # Run benchmark
-│   ├── cleanup.sh           # Destroy VMs
-│   ├── status*.sh           # Status commands
-│   ├── list-*.sh            # List commands
-│   └── apply-*.sh           # Foundation/monitoring
+│   ├── l1.sh                # L1 BNE: create|destroy|status
+│   ├── snapshot.sh          # Snapshots: create|delete|list
+│   ├── vm.sh                # VMs: provision|configure|cleanup|benchmark|status|sync
+│   ├── build.sh             # Builds: reth|op-node|status
+│   ├── apply.sh             # Apply: foundation|monitoring
+│   ├── status.sh            # Status: all|vm|sync|vms|instances
+│   └── validate.sh          # Validate: config|terraform
 ├── docs/
 │   ├── PERFORMANCE-TUNING.md        # Comprehensive performance tuning guide
 │   ├── ETA-CALC.md                  # ETA calculation for sync stages
@@ -443,12 +488,22 @@ See `docs/ETA-CALC.md` for comprehensive guide on:
 │       ├── op_node/         # op-node binary + systemd service
 │       └── lssd_copy/       # rsync from temp disk to LSSD RAID
 └── cloudbuild/              # Cloud Build configs
-    ├── build-op-reth.yaml   # Build op-reth binary from source
-    ├── build-op-node.yaml   # Build op-node binary (extract from Docker)
-    ├── provision.yaml       # Terraform apply (create VMs)
-    ├── configure.yaml       # Ansible playbook (configure VMs)
-    ├── run-benchmark.yaml   # Run benchmark
-    ├── cleanup.yaml         # Terraform destroy
-    ├── create-l1.yaml       # Create BNE node
-    └── destroy-l1.yaml      # Destroy BNE node
+    ├── benchmark/           # VM lifecycle
+    │   ├── provision.yaml   # Terraform apply (create VMs)
+    │   ├── configure.yaml   # Ansible playbook (configure VMs)
+    │   ├── cleanup.yaml     # Terraform destroy
+    │   └── run.yaml         # Run benchmark
+    ├── builds/              # Binary builds
+    │   ├── op-reth.yaml     # Build op-reth binary from source
+    │   └── op-node.yaml     # Build op-node binary (extract from Docker)
+    ├── l1/                  # L1 infrastructure
+    │   ├── create.yaml      # Create BNE node
+    │   └── destroy.yaml     # Destroy BNE node
+    ├── foundation/          # Foundation infrastructure
+    │   └── apply.yaml
+    ├── monitoring/          # Monitoring infrastructure
+    │   └── apply.yaml
+    └── snapshots/           # Snapshot management
+        ├── create.yaml
+        └── list.yaml
 ```

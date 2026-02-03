@@ -56,10 +56,10 @@
           Destination: {{ mount_point }}
           
           Using parallel copy for maximum throughput:
-          - dd + pv: mdbx.dat (~5.5TB)
-          - tar: all other files (~2.6TB)
+          - dd + pv: mdbx.dat (~1.3TB for pruned snapshot)
+          - tar: all other files (~300GB)
           
-          Expected time: ~3 hours (limited by source disk read speed)
+          Expected time: ~30-45 min (limited by source disk read speed)
           ============================================================
 
     - name: Ensure database directory exists
@@ -81,7 +81,8 @@
       register: dd_job
 
     # Copy all other files with tar (foreground)
-    # --no-same-owner: extract as root (service runs as reth user via systemd)
+    # --no-same-owner: extracts files owned by current user (root) rather than
+    # preserving original ownership. Ownership is fixed in site.yml post_tasks.
     - name: Copy remaining files using tar
       shell: |
         cd {{ snapshot_mount_point }} && \
@@ -106,12 +107,8 @@
       debug:
         msg: "mdbx.dat copy completed successfully"
 
-    # Fix ownership for all files (tar extracts as root with --no-same-owner)
-    - name: Fix ownership of all copied files
-      shell: |
-        chown -R {{ service_user }}:{{ service_group }} {{ mount_point }}/op-reth
-        chown -R {{ service_user }}:{{ service_group }} {{ mount_point }}/op-node
-      changed_when: true
+    # Note: Ownership is fixed by the op_reth role, not here.
+    # This ensures consistent behavior whether data comes from snapshot copy or other sources.
 
     - name: Unmount snapshot disk
       mount:

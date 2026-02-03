@@ -278,10 +278,15 @@ resource "google_compute_instance" "vm" {
   # Allow the instance to be replaced if needed
   allow_stopping_for_update = true
 
-  # Ignore scratch_disk changes - machines with built-in local SSDs (inbuilt-lssd)
-  # have NVMe drives that appear in Terraform state but aren't defined in config.
-  # Without this, Terraform would try to recreate these VMs on every apply.
+  # Prevent unwanted VM recreation:
+  # - scratch_disk: Machines with built-in local SSDs (inbuilt-lssd) have NVMe drives
+  #   that appear in Terraform state but aren't defined in config.
+  # - boot_disk image: Ubuntu releases new images periodically. Without ignoring this,
+  #   Terraform would try to recreate VMs whenever a new image is released.
   lifecycle {
-    ignore_changes = [scratch_disk]
+    ignore_changes = [
+      scratch_disk,
+      boot_disk[0].initialize_params[0].image,
+    ]
   }
 }

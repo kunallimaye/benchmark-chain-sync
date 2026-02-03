@@ -11,6 +11,11 @@
 # - For LSSD machines: copy data from temp snapshot disk via rsync
 # - For persistent disks: data is already present (created from snapshot)
 # - Start op-reth and op-node services
+#
+# Safety Features:
+# - Roles check if services are running before making changes
+# - If config changes on running service, playbook FAILS (requires FORCE)
+# - Use: make configure FORCE=true to allow restarts
 # =============================================================================
 
 - name: Setup benchmark VM
@@ -29,33 +34,36 @@
       shell: while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 5; done
       changed_when: false
 
-    # NOTE: Removed stat task that was computing SHA1 checksum of 5TB database file
-    # The task registered reth_db_exists but it was never used anywhere
-    # If needed in future, use: stat: path=... get_checksum=no get_mime=no
-
   roles:
     - common
     - ops_agent
     - system_tuning
-    - role: op_reth
-      vars:
-        start_services: false
-    - role: op_node
-      vars:
-        start_services: false
+    - op_reth
+    - op_node
     # LSSD machines need to copy data from temp snapshot disk
     - role: lssd_copy
       when: is_lssd_machine | default(false)
 
   post_tasks:
-    - name: Start op-reth service
+    # Fix ownership of data directories before starting services
+    # Handles both:
+    # - Snapshot-based disks: files retain original uid/gid from snapshot
+    # - LSSD machines: tar extracts files as root (running user)
+    - name: Fix ownership of data directories
+      shell: |
+        chown -R {{ service_user }}:{{ service_group }} {{ op_reth_data_dir }}
+        chown -R {{ service_user }}:{{ service_group }} {{ op_node_data_dir }}
+      changed_when: true
+
+    # Start services if not already running
+    # state: started is idempotent - no-op if already running
+    - name: Start op-reth service (if not already running)
       systemd:
         name: op-reth
         state: started
         enabled: yes
-        daemon_reload: yes
 
-    - name: Start op-node service
+    - name: Start op-node service (if not already running)
       systemd:
         name: op-node
         state: started
@@ -74,9 +82,9 @@
           LSSD machine: {{ is_lssd_machine | default(false) }}
           Confidential compute (TDX): {{ confidential_compute | default(true) }}
           
-          Services started:
-            - op-reth: running
-            - op-node: running
+          Services:
+            - op-reth: {{ 'already running' if op_reth_running.rc == 0 else 'started' }}
+            - op-node: {{ 'already running' if op_node_running.rc == 0 else 'started' }}
           
           Data location: {{ mount_point }}/op-reth/
           

@@ -116,6 +116,48 @@ list_config_vms() {
 }
 
 # -----------------------------------------------------------------------------
+# Flag parsing helper
+# -----------------------------------------------------------------------------
+# Usage: parse_flags "$@"
+# Sets global variables based on flags passed
+# Remaining positional args are stored in POSITIONAL_ARGS array
+parse_flags() {
+    # Reset variables
+    VM=""
+    WAIT=""
+    FORCE=""
+    PLAN_ONLY=""
+    SNAPSHOT=""
+    TYPE=""
+    RETH_COMMIT=""
+    POSITIONAL_ARGS=()
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --vm=*) VM="${1#*=}" ;;
+            --wait) WAIT="true" ;;
+            --force) FORCE="true" ;;
+            --plan) PLAN_ONLY="true" ;;
+            --snapshot=*) SNAPSHOT="${1#*=}" ;;
+            --type=*) TYPE="${1#*=}" ;;
+            --commit=*) RETH_COMMIT="${1#*=}" ;;
+            --help|-h)
+                # Let caller handle help
+                SHOW_HELP="true"
+                ;;
+            -*)
+                die "Unknown flag: $1"
+                ;;
+            *)
+                # Positional argument
+                POSITIONAL_ARGS+=("$1")
+                ;;
+        esac
+        shift
+    done
+}
+
+# -----------------------------------------------------------------------------
 # SSH to VM using internal hostname
 # -----------------------------------------------------------------------------
 ssh_to_vm() {
