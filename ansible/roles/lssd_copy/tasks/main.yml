@@ -38,13 +38,13 @@
         state: directory
         mode: '0755'
 
-    - name: Mount snapshot disk read-only
+    - name: Mount snapshot disk read-only (no fstab entry)
       mount:
         path: "{{ snapshot_mount_point }}"
         src: "{{ snapshot_disk_device }}"
         fstype: xfs
         opts: ro
-        state: mounted
+        state: ephemeral  # Mount without adding to fstab (temp mount only)
 
     - name: Display copy information
       debug:
@@ -110,15 +110,36 @@
     # Note: Ownership is fixed by the op_reth role, not here.
     # This ensures consistent behavior whether data comes from snapshot copy or other sources.
 
-    - name: Unmount snapshot disk
+    - name: Unmount snapshot disk and remove any fstab entry
       mount:
         path: "{{ snapshot_mount_point }}"
-        state: unmounted
+        state: absent  # Unmounts AND removes fstab entry if it exists
 
     - name: Remove snapshot mount point
       file:
         path: "{{ snapshot_mount_point }}"
         state: absent
+
+  rescue:
+    # If anything fails, ensure we clean up the fstab entry to prevent boot issues
+    - name: Emergency cleanup - remove fstab entry on failure
+      mount:
+        path: "{{ snapshot_mount_point }}"
+        state: absent
+      ignore_errors: yes
+
+    - name: Emergency cleanup - remove mount point on failure
+      file:
+        path: "{{ snapshot_mount_point }}"
+        state: absent
+      ignore_errors: yes
+
+    - name: Fail with helpful message
+      fail:
+        msg: |
+          LSSD copy failed. The fstab entry has been cleaned up to prevent boot issues.
+          Check the logs above for the actual error.
+          You may need to re-run configure after fixing the issue.
 
 - name: Verify data on LSSD
   shell: test -f "{{ mount_point }}/op-reth/db/mdbx.dat"

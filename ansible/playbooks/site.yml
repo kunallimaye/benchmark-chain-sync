@@ -38,11 +38,12 @@
     - common
     - ops_agent
     - system_tuning
-    - op_reth
-    - op_node
-    # LSSD machines need to copy data from temp snapshot disk
+    # LSSD machines need to copy data from temp snapshot disk BEFORE service setup
+    # This must run before op_reth so data is in place when the service is configured
     - role: lssd_copy
       when: is_lssd_machine | default(false)
+    - op_reth
+    - op_node
 
   post_tasks:
     # Fix ownership of data directories before starting services

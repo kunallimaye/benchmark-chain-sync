@@ -350,7 +350,9 @@ This allows the downloader VM to generate signed URLs for GCS objects during sna
 
 11. **inbuilt-lssd rsync** - Machines with `storage_type = "inbuilt-lssd"` can't create disks from snapshot directly (ephemeral NVMe). Cloud Build creates a temp disk from snapshot, attaches it, rsyncs data to the local SSD RAID, then deletes the temp disk.
 
-11. **PromQL label matching** - When combining metrics from different sources (e.g., `op_node_*` and `reth_*`), use `on(vm_name)` modifier for arithmetic operations. Labels must match explicitly or PromQL returns no data.
+12. **LSSD Ansible mount state** - When mounting temporary disks in Ansible roles (like `lssd_copy`), use `state: ephemeral` instead of `state: mounted` to avoid adding fstab entries. Leftover fstab entries for non-existent disks cause VMs to drop into emergency mode on reboot. Always use `state: absent` for unmounting to clean up any fstab entries. The `lssd_copy` role also includes a `rescue` block to clean up fstab on failure.
+
+13. **PromQL label matching** - When combining metrics from different sources (e.g., `op_node_*` and `reth_*`), use `on(vm_name)` modifier for arithmetic operations. Labels must match explicitly or PromQL returns no data.
     ```promql
     # Wrong - label mismatch, returns no data
     op_node_metric - reth_metric
@@ -359,9 +361,9 @@ This allows the downloader VM to generate signed URLs for GCS objects during sna
     op_node_metric - on(vm_name) reth_metric
     ```
 
-12. **Sync stages and dashboard** - The dashboard filters for `stage="Execution"`. When a VM is in other stages (StorageHashing, Merkle, etc.), throughput shows 0. This is normal - check VM logs to see actual stage.
+14. **Sync stages and dashboard** - The dashboard filters for `stage="Execution"`. When a VM is in other stages (StorageHashing, Merkle, etc.), throughput shows 0. This is normal - check VM logs to see actual stage.
 
-13. **Targeted Terraform apply** - Use `_TARGET` substitution in provision.yaml to apply only specific modules:
+15. **Targeted Terraform apply** - Use `_TARGET` substitution in provision.yaml to apply only specific modules:
     ```bash
     gcloud builds submit . --config=cloudbuild/provision.yaml \
       --substitutions="_TARGET=module.monitoring,..."
