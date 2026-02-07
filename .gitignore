@@ -21,3 +21,4 @@ ansible/inventory/hosts.yml
 Thumbs.db
 
 SESSION.md
+__pycache__/

@@ -162,29 +162,60 @@ journalctl -u op-reth.service -n 10 --no-pager 2>/dev/null || echo "No logs avai
     sync)
         header "Sync Status"
         
-        # Query logs and extract latest per VM
-        gcloud logging read '
+        # Query sync progress logs (Committed stage progress) and synced logs (Inserted new L2 unsafe block)
+        # Use jsonPayload.message since Ops Agent sends structured logs
+        {
+            gcloud logging read '
 resource.type="gce_instance"
-textPayload=~"Committed stage progress"
-' --project="$PROJECT_ID" --limit=50 --format=json 2>/dev/null | python3 -c "
+jsonPayload.message=~"Committed stage progress"
+' --project="$PROJECT_ID" --limit=50 --format=json 2>/dev/null
+            
+            gcloud logging read '
+resource.type="gce_instance"
+jsonPayload.message=~"Inserted new L2 unsafe block"
+' --project="$PROJECT_ID" --limit=20 --format=json 2>/dev/null
+        } | python3 -c "
 import json, sys, re
 from datetime import datetime
 
-logs = json.load(sys.stdin)
+# Read all JSON arrays from stdin and merge them
+all_logs = []
+buffer = ''
+for line in sys.stdin:
+    buffer += line
+    if line.strip() == ']':
+        try:
+            all_logs.extend(json.loads(buffer))
+        except:
+            pass
+        buffer = ''
 
-if not logs:
+if not all_logs:
     print('No sync progress logs found. VMs may not be syncing yet.')
     sys.exit(0)
 
 # Group by VM and keep only the latest
 latest_by_vm = {}
-for log in logs:
-    text = log.get('textPayload', '')
-    vm_match = re.search(r'\+00:00 ([\w-]+) op-reth', text)
-    if not vm_match:
+synced_vms = {}  # VMs that are synced (processing live blocks)
+
+for log in all_logs:
+    # Get VM name from label (more reliable than parsing text)
+    vm_name = log.get('labels', {}).get('compute.googleapis.com/resource_name', '')
+    if not vm_name:
         continue
-    vm_name = vm_match.group(1)
     
+    # Get message from jsonPayload
+    text = log.get('jsonPayload', {}).get('message', '')
+    if not text:
+        continue
+    
+    # Check if this is a synced VM (op-node inserting live blocks)
+    if 'Inserted new L2 unsafe block' in text:
+        if vm_name not in synced_vms:
+            synced_vms[vm_name] = log
+        continue
+    
+    # Otherwise it's a sync progress log
     if vm_name not in latest_by_vm:
         latest_by_vm[vm_name] = log
 
@@ -192,9 +223,10 @@ for log in logs:
 print(f\"{'VM':<40} {'Stage':<15} {'Pipeline':<9} {'Checkpoint':<11} {'Target':<11} {'Progress':<9} {'ETA':<8} {'Updated':<20}\")
 print('-' * 130)
 
+# Show syncing VMs first
 for vm_name in sorted(latest_by_vm.keys()):
     log = latest_by_vm[vm_name]
-    text = log.get('textPayload', '')
+    text = log.get('jsonPayload', {}).get('message', '')
     timestamp_str = log.get('timestamp', '')
     
     # Parse timestamp and convert to local timezone
@@ -212,6 +244,26 @@ for vm_name in sorted(latest_by_vm.keys()):
     eta = re.search(r'stage_eta=([\dhms]+)', text)
     
     print(f\"{vm_name:<40} {(stage.group(1) if stage else '-'):<15} {(pipeline.group(1) if pipeline else '-'):<9} {(checkpoint.group(1) if checkpoint else '-'):<11} {(target.group(1) if target else '-'):<11} {((progress.group(1) + '%') if progress else '-'):<9} {(eta.group(1) if eta else '-'):<8} {local_ts:<20}\")
+
+# Show synced VMs
+for vm_name in sorted(synced_vms.keys()):
+    if vm_name in latest_by_vm:
+        continue  # Already shown above with sync progress
+    log = synced_vms[vm_name]
+    text = log.get('jsonPayload', {}).get('message', '')
+    timestamp_str = log.get('timestamp', '')
+    
+    try:
+        ts = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+        local_ts = ts.astimezone().strftime('%Y-%m-%d %H:%M:%S')
+    except:
+        local_ts = '-'
+    
+    # Extract block number from op-node log
+    block_match = re.search(r'number=(\d+)', text)
+    block_num = block_match.group(1) if block_match else '-'
+    
+    print(f\"{vm_name:<40} {'SYNCED':<15} {'-':<9} {block_num:<11} {block_num:<11} {'100%':<9} {'-':<8} {local_ts:<20}\")
 "
         ;;
         
